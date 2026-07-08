@@ -50,6 +50,23 @@ export function runtimeConfigFromDevEnv(env: RuntimeConfigEnv): RuntimeConfig {
   };
 }
 
+export function runtimeConfigFromBuildEnv(env: RuntimeConfigEnv): RuntimeConfig {
+  const apiUrl = normalizeHttpUrl(
+    env.apiUrl || DEFAULT_RUNTIME_CONFIG.apiUrl,
+    "VITE_API_URL",
+  );
+  return {
+    schemaVersion: 1,
+    apiUrl,
+    wsUrl: env.wsUrl
+      ? normalizeWsUrl(env.wsUrl, "VITE_WS_URL")
+      : deriveWsUrl(apiUrl),
+    appUrl: env.appUrl
+      ? normalizeHttpUrl(env.appUrl, "VITE_APP_URL")
+      : deriveAppUrl(apiUrl),
+  };
+}
+
 export function parseRuntimeConfig(raw: string): RuntimeConfig {
   let parsed: unknown;
   try {
