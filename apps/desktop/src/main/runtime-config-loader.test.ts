@@ -54,6 +54,29 @@ describe("loadRuntimeConfig", () => {
     });
   });
 
+  it("uses production build env when packaged config is absent", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "multica-desktop-config-"));
+    await expect(
+      loadRuntimeConfig({
+        isDev: false,
+        configPath: join(dir, "missing.json"),
+        env: {
+          apiUrl: "https://direct.multica-be.elvisiky.com:3000",
+          wsUrl: "wss://direct.multica-be.elvisiky.com:3000/ws",
+          appUrl: "https://direct.multica.elvisiky.com:3000",
+        },
+      }),
+    ).resolves.toEqual({
+      ok: true,
+      config: {
+        schemaVersion: 1,
+        apiUrl: "https://direct.multica-be.elvisiky.com:3000",
+        wsUrl: "wss://direct.multica-be.elvisiky.com:3000/ws",
+        appUrl: "https://direct.multica.elvisiky.com:3000",
+      },
+    });
+  });
+
   it("parses a valid packaged desktop.json", async () => {
     const dir = await mkdtemp(join(tmpdir(), "multica-desktop-config-"));
     const configPath = join(dir, "desktop.json");

@@ -14,10 +14,31 @@ import (
 	"github.com/pelletier/go-toml/v2"
 )
 
+// Directories to symlink from the shared ~/.codex/ into the per-task CODEX_HOME.
+// The shared directory is created if it doesn't exist, ensuring Codex session
+// logs are always written to the global home where users can find them.
+var codexSymlinkedDirs = []string{
+	"sessions",
+}
+
+// Optional directories to symlink from the shared ~/.codex/ into the per-task
+// CODEX_HOME. Missing sources are skipped so environments without Codex hooks
+// do not get empty hook directories.
+var codexOptionalSymlinkedDirs = []string{
+	"hooks",
+}
+
 // Files to symlink from the shared ~/.codex/ into the per-task CODEX_HOME.
 // Symlinks share state (e.g. auth tokens) so changes propagate automatically.
 var codexSymlinkedFiles = []string{
 	"auth.json",
+}
+
+// Optional files to symlink from the shared ~/.codex/ into the per-task
+// CODEX_HOME. Missing or invalid sources clear any stale per-task copy/link
+// so removed hook configuration does not survive workspace reuse.
+var codexOptionalSymlinkedFiles = []string{
+	"hooks.json",
 }
 
 // Files to copy from the shared ~/.codex/ into the per-task CODEX_HOME.
@@ -213,12 +234,39 @@ func prepareCodexHomeWithOpts(codexHome string, opts CodexHomeOptions, logger *s
 		logger.Warn("execenv: codex-home sessions dir prepare failed", "error", err)
 	}
 
-	// Symlink shared files (auth).
+	// Symlink shared directories so session logs stay in the global home.
+	for _, name := range codexSymlinkedDirs {
+		src := filepath.Join(sharedHome, name)
+		dst := filepath.Join(codexHome, name)
+		if err := ensureDirSymlink(src, dst); err != nil {
+			logger.Warn("execenv: codex-home dir symlink failed", "dir", name, "error", err)
+		}
+	}
+
+	// Symlink optional shared directories only when they already exist.
+	for _, name := range codexOptionalSymlinkedDirs {
+		src := filepath.Join(sharedHome, name)
+		dst := filepath.Join(codexHome, name)
+		if err := ensureExistingDirSymlink(src, dst); err != nil {
+			logger.Warn("execenv: codex-home optional dir symlink failed", "dir", name, "error", err)
+		}
+	}
+
+	// Symlink shared files so auth changes propagate automatically.
 	for _, name := range codexSymlinkedFiles {
 		src := filepath.Join(sharedHome, name)
 		dst := filepath.Join(codexHome, name)
 		if err := ensureSymlink(src, dst); err != nil {
 			logger.Warn("execenv: codex-home symlink failed", "file", name, "error", err)
+		}
+	}
+
+	// Symlink optional hook config only when the shared source is valid.
+	for _, name := range codexOptionalSymlinkedFiles {
+		src := filepath.Join(sharedHome, name)
+		dst := filepath.Join(codexHome, name)
+		if err := ensureOptionalFileSymlink(src, dst); err != nil {
+			logger.Warn("execenv: codex-home optional file symlink failed", "file", name, "error", err)
 		}
 	}
 
@@ -251,6 +299,26 @@ func prepareCodexHomeWithOpts(codexHome string, opts CodexHomeOptions, logger *s
 	// user-level registry is redundant here. See codex_skill_strip.go.
 	if err := sanitizeCopiedCodexConfig(filepath.Join(codexHome, "config.toml")); err != nil {
 		logger.Warn("execenv: codex-home sanitize config failed", "error", err)
+	}
+
+	// Codex keys hook trust by the hooks.json source path. The per-task home
+	// loads codex-home/hooks.json, so trust accepted for the shared
+	// ~/.codex/hooks.json must be mirrored to that per-task source ID.
+	hookTrustResult, err := syncCodexHookTrustStateWithResult(
+		filepath.Join(sharedHome, "config.toml"),
+		filepath.Join(codexHome, "config.toml"),
+		filepath.Join(sharedHome, "hooks.json"),
+		filepath.Join(codexHome, "hooks.json"),
+	)
+	if err != nil {
+		logger.Warn("execenv: codex-home hook trust sync failed", "error", err)
+	} else {
+		logger.Info("execenv: codex-home hook trust sync",
+			"codex_home", codexHome,
+			"shared_hooks", hookTrustResult.SharedHooksCount,
+			"mapped_hooks", hookTrustResult.MappedHooksCount,
+			"stale_hooks", hookTrustResult.StaleHooksCount,
+			"changed", hookTrustResult.Changed)
 	}
 
 	if err := syncCodexReferencedFiles(codexHome, sharedHome); err != nil {
@@ -1258,6 +1326,121 @@ func exposeSharedCodexPluginCache(codexHome, sharedHome string) error {
 
 	if err := createDirLink(src, dst); err != nil {
 		return fmt.Errorf("expose shared plugin cache: %w", err)
+	}
+	return nil
+}
+
+// ensureDirSymlink creates a symlink dst → src for a directory.
+// Unlike ensureSymlink, it creates the source directory if it doesn't exist,
+// so Codex can write to it immediately.
+func ensureDirSymlink(src, dst string) error {
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		return fmt.Errorf("create shared dir %s: %w", src, err)
+	}
+
+	// Check if dst already exists.
+	if fi, err := os.Lstat(dst); err == nil {
+		if fi.Mode()&os.ModeSymlink != 0 {
+			target, err := os.Readlink(dst)
+			if err == nil && target == src {
+				return nil // already correct
+			}
+			os.Remove(dst)
+		} else {
+			// Regular file/dir exists — don't overwrite.
+			return nil
+		}
+	}
+
+	return createDirLink(src, dst)
+}
+
+// ensureExistingDirSymlink creates a symlink dst -> src only when src already
+// exists as a directory. Missing or non-directory sources clear stale dst
+// residue left by earlier prepares or Windows junction/copy fallbacks.
+func ensureExistingDirSymlink(src, dst string) error {
+	fi, err := os.Stat(src)
+	if os.IsNotExist(err) {
+		return removeOptionalPath(dst)
+	}
+	if err != nil {
+		return fmt.Errorf("stat shared dir %s: %w", src, err)
+	}
+	if !fi.IsDir() {
+		return removeOptionalPath(dst)
+	}
+
+	if fi, err := os.Lstat(dst); err == nil {
+		if fi.Mode()&os.ModeSymlink != 0 {
+			target, err := os.Readlink(dst)
+			if err == nil && target == src {
+				return nil
+			}
+			if err := os.Remove(dst); err != nil {
+				return fmt.Errorf("remove stale dir link %s: %w", dst, err)
+			}
+		} else {
+			if err := os.RemoveAll(dst); err != nil {
+				return fmt.Errorf("remove stale dir path %s: %w", dst, err)
+			}
+		}
+	}
+
+	return createDirLink(src, dst)
+}
+
+// ensureOptionalFileSymlink creates a symlink/copy dst -> src only when src
+// exists as a regular file. Missing or invalid hook config removes any stale
+// per-task copy/link so workspace reuse reflects the shared home lifecycle.
+func ensureOptionalFileSymlink(src, dst string) error {
+	fi, err := os.Stat(src)
+	if os.IsNotExist(err) {
+		return removeOptionalPath(dst)
+	}
+	if err != nil {
+		return fmt.Errorf("stat shared file %s: %w", src, err)
+	}
+	if !fi.Mode().IsRegular() {
+		return removeOptionalPath(dst)
+	}
+
+	if fi, err := os.Lstat(dst); err == nil {
+		if fi.Mode()&os.ModeSymlink != 0 {
+			target, err := os.Readlink(dst)
+			if err == nil && target == src {
+				return nil
+			}
+			if err := os.Remove(dst); err != nil {
+				return fmt.Errorf("remove stale optional file link %s: %w", dst, err)
+			}
+		} else {
+			if err := os.RemoveAll(dst); err != nil {
+				return fmt.Errorf("remove stale optional file path %s: %w", dst, err)
+			}
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat optional file dst %s: %w", dst, err)
+	}
+
+	return createFileLink(src, dst)
+}
+
+func removeOptionalPath(path string) error {
+	fi, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("stat optional dst %s: %w", path, err)
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		if err := os.Remove(path); err != nil {
+			return fmt.Errorf("remove optional dst link %s: %w", path, err)
+		}
+		return nil
+	}
+	if err := os.RemoveAll(path); err != nil {
+		return fmt.Errorf("remove optional dst path %s: %w", path, err)
 	}
 	return nil
 }

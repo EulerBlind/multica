@@ -4,8 +4,12 @@ directories:
   buildResources: build
 files:
   - "!**/.vscode/*"
+  - "!dist{,/**/*}"
+  - "!scripts{,/**/*}"
   - "!src/*"
+  - "!test{,/**/*}"
   - "!electron.vite.config.*"
+  - "!vitest.config.*"
   - "!{.eslintignore,.eslintrc.cjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}"
   - "!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}"
   # Never repack the electron-builder output directory into the app.

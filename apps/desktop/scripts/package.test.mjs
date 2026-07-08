@@ -13,6 +13,7 @@ import {
   resolveBuildMatrix,
   stripLeadingSeparator,
 } from "./package.mjs";
+import { PRIVATE_PACKAGE_ENV, privatePackageEnv } from "./package-private.mjs";
 
 describe("normalizeGitVersion", () => {
   it("returns null for empty / nullish input", () => {
@@ -260,6 +261,25 @@ describe("resolveBuildMatrix", () => {
         "arm64",
       ),
     ).toThrow(/unsupported Desktop CLI architecture/);
+  });
+});
+
+describe("privatePackageEnv", () => {
+  it("pins the private desktop endpoints", () => {
+    expect(privatePackageEnv({ PATH: "/bin" })).toMatchObject({
+      PATH: "/bin",
+      ...PRIVATE_PACKAGE_ENV,
+    });
+  });
+
+  it("overrides ambient VITE endpoint variables", () => {
+    expect(
+      privatePackageEnv({
+        VITE_API_URL: "https://polluted-api.example.com",
+        VITE_WS_URL: "wss://polluted-ws.example.com/ws",
+        VITE_APP_URL: "https://polluted-app.example.com",
+      }),
+    ).toMatchObject(PRIVATE_PACKAGE_ENV);
   });
 });
 
