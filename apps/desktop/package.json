@@ -27,6 +27,7 @@
     "typecheck": "pnpm run typecheck:node && pnpm run typecheck:web",
     "preview": "electron-vite preview",
     "package": "node scripts/package.mjs",
+    "package:private": "node scripts/package-private.mjs",
     "package:all": "node scripts/package.mjs --all-platforms --publish never",
     "lint": "eslint .",
     "test": "vitest run",

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   deriveWsUrl,
   parseRuntimeConfig,
+  runtimeConfigFromBuildEnv,
   runtimeConfigFromDevEnv,
 } from "./runtime-config";
 
@@ -137,6 +138,34 @@ describe("runtime config", () => {
       apiUrl: "https://api.test.multica.ai",
       wsUrl: "wss://api.test.multica.ai/ws",
       appUrl: "https://staging.multica.ai",
+    });
+  });
+
+  it("uses cloud defaults for empty production build env", () => {
+    expect(runtimeConfigFromBuildEnv({})).toEqual(DEFAULT_RUNTIME_CONFIG);
+  });
+
+  it("uses production build env for packaged private defaults", () => {
+    expect(
+      runtimeConfigFromBuildEnv({
+        apiUrl: "https://direct.multica-be.elvisiky.com:3000/",
+        wsUrl: "wss://direct.multica-be.elvisiky.com:3000/ws/",
+        appUrl: "https://direct.multica.elvisiky.com:3000/",
+      }),
+    ).toEqual({
+      schemaVersion: 1,
+      apiUrl: "https://direct.multica-be.elvisiky.com:3000",
+      wsUrl: "wss://direct.multica-be.elvisiky.com:3000/ws",
+      appUrl: "https://direct.multica.elvisiky.com:3000",
+    });
+  });
+
+  it("derives production appUrl from build apiUrl outside dev mode", () => {
+    expect(runtimeConfigFromBuildEnv({ apiUrl: "https://api.test.multica.ai" })).toEqual({
+      schemaVersion: 1,
+      apiUrl: "https://api.test.multica.ai",
+      wsUrl: "wss://api.test.multica.ai/ws",
+      appUrl: "https://test.multica.ai",
     });
   });
 });
