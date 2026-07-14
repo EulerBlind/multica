@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
-import { afterEach, describe, it, expect } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
 import {
   builderArgsForTarget,
   deriveVersion,
@@ -13,7 +13,26 @@ import {
   resolveBuildMatrix,
   stripLeadingSeparator,
 } from "./package.mjs";
-import { PRIVATE_PACKAGE_ENV, privatePackageEnv } from "./package-private.mjs";
+import {
+  PRIVATE_MACOS_SIGNING_MODE,
+  PRIVATE_PACKAGE_ENV,
+  REQUIRED_PRIVATE_MACOS_ENV,
+  packagePrivateDesktop,
+  privatePackageEnv,
+} from "./package-private.mjs";
+
+function privateMacosReleaseEnv(overrides = {}) {
+  return {
+    PATH: "/bin",
+    MULTICA_MACOS_SIGNING_MODE: PRIVATE_MACOS_SIGNING_MODE,
+    CSC_LINK: "/secure/developer-id.p12",
+    CSC_KEY_PASSWORD: "certificate-password",
+    APPLE_ID: "release@example.test",
+    APPLE_APP_SPECIFIC_PASSWORD: "app-password",
+    APPLE_TEAM_ID: "TEAM123456",
+    ...overrides,
+  };
+}
 
 describe("normalizeGitVersion", () => {
   it("returns null for empty / nullish input", () => {
@@ -283,7 +302,112 @@ describe("privatePackageEnv", () => {
   });
 });
 
+describe("private package direct entry", () => {
+  it.each(["MULTICA_MACOS_SIGNING_MODE", ...REQUIRED_PRIVATE_MACOS_ENV])(
+    "rejects missing %s before spawning the package script",
+    (name) => {
+      const spawn = vi.fn();
+
+      expect(() =>
+        packagePrivateDesktop({
+          args: ["--mac", "--publish", "never"],
+          env: privateMacosReleaseEnv({ [name]: "" }),
+          platform: "darwin",
+          arch: "arm64",
+          spawn,
+          root: "/repo/apps/desktop",
+        }),
+      ).toThrow(name);
+      expect(spawn).not.toHaveBeenCalled();
+    },
+  );
+
+  it("rejects the unsigned smoke override before spawning the package script", () => {
+    const spawn = vi.fn();
+
+    expect(() =>
+      packagePrivateDesktop({
+        args: ["--mac", "--publish", "never"],
+        env: privateMacosReleaseEnv({ CSC_IDENTITY_AUTO_DISCOVERY: "false" }),
+        platform: "darwin",
+        arch: "arm64",
+        spawn,
+      }),
+    ).toThrow(/forbids CSC_IDENTITY_AUTO_DISCOVERY=false/);
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it("passes a complete controlled environment to the existing package script", () => {
+    const spawn = vi.fn(() => ({ status: 0 }));
+    const env = privateMacosReleaseEnv();
+
+    packagePrivateDesktop({
+      args: ["--mac", "--publish", "never"],
+      env,
+      platform: "darwin",
+      arch: "arm64",
+      spawn,
+      root: "/repo/apps/desktop",
+    });
+
+    expect(spawn).toHaveBeenCalledOnce();
+    expect(spawn).toHaveBeenCalledWith(
+      process.execPath,
+      [
+        "/repo/apps/desktop/scripts/package.mjs",
+        "--mac",
+        "--publish",
+        "never",
+      ],
+      {
+        cwd: "/repo/apps/desktop",
+        env: { ...env, ...PRIVATE_PACKAGE_ENV },
+        stdio: "inherit",
+      },
+    );
+  });
+
+  it("does not require Apple inputs for a Linux-only private package", () => {
+    const spawn = vi.fn(() => ({ status: 0 }));
+
+    packagePrivateDesktop({
+      args: ["--linux", "--publish", "never"],
+      env: { PATH: "/bin" },
+      platform: "linux",
+      arch: "x64",
+      spawn,
+      root: "/repo/apps/desktop",
+    });
+
+    expect(spawn).toHaveBeenCalledOnce();
+  });
+});
+
 describe("builderArgsForTarget", () => {
+  it("keeps notarization enabled for a controlled macOS release", () => {
+    const args = builderArgsForTarget(
+      { platform: "mac", arch: "arm64" },
+      {
+        allPlatforms: false,
+        sharedArgs: ["--publish", "never"],
+        platformTargets: { mac: [], win: [], linux: [] },
+        requestedPlatforms: ["mac"],
+        requestedArchs: ["arm64"],
+      },
+      "1.2.3",
+      { disableMacNotarize: false, hostPlatform: "darwin" },
+    );
+
+    expect(args).toEqual([
+      "-c.extraMetadata.version=1.2.3",
+      "--mac",
+      "--arm64",
+      "--publish",
+      "never",
+    ]);
+    expect(args).not.toContain("-c.mac.notarize=false");
+  });
+
   it("adds scoped output directories for multi-target builds", () => {
     expect(
       builderArgsForTarget(
