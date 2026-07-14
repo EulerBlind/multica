@@ -14,6 +14,7 @@ import { queryClient } from "@/data/query-client";
 import { useAuthStore } from "@/data/auth-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { LightboxProvider, prewarmHighlighter } from "@/lib/markdown";
+import { ActionSheetProvider } from "@/components/ui/action-sheet";
 import { NAV_THEME } from "@/lib/theme";
 import { useColorScheme } from "@/lib/use-color-scheme";
 
@@ -66,15 +67,17 @@ export default function RootLayout() {
           <QueryClientProvider client={queryClient}>
             <ThemeProvider value={NAV_THEME[colorScheme]}>
               <AuthInitializer>
-                <LightboxProvider>
-                  <StatusBar style={isDarkColorScheme ? "light" : "dark"} />
-                  <Stack screenOptions={{ headerShown: false }}>
-                    <Stack.Screen name="index" />
-                    <Stack.Screen name="(auth)" />
-                    <Stack.Screen name="(app)" />
-                  </Stack>
-                  <PortalHost />
-                </LightboxProvider>
+                <ActionSheetProvider>
+                  <LightboxProvider>
+                    <StatusBar style={isDarkColorScheme ? "light" : "dark"} />
+                    <Stack screenOptions={{ headerShown: false }}>
+                      <Stack.Screen name="index" />
+                      <Stack.Screen name="(auth)" />
+                      <Stack.Screen name="(app)" />
+                    </Stack>
+                    <PortalHost />
+                  </LightboxProvider>
+                </ActionSheetProvider>
               </AuthInitializer>
             </ThemeProvider>
           </QueryClientProvider>

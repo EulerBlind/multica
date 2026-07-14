@@ -27,6 +27,7 @@ import type {
   WSEventType,
   WSMessage,
 } from "@multica/core/types";
+import { normalizeClientOS, type ClientOS } from "@/lib/client-os";
 
 /** Generic handler used internally by the dispatcher map. Each `on<E>()`
  *  call narrows this to `(payload: WSEventPayload<E>, actorId?) => void`
@@ -56,6 +57,8 @@ export interface WSClientOptions {
   workspaceSlug: string;
   /** Mobile app version, surfaced to server logs for debuggability. */
   clientVersion?: string;
+  /** Injected by the platform provider so this transport stays testable. */
+  clientOS?: ClientOS;
   logger?: Logger;
 }
 
@@ -199,7 +202,7 @@ export class WSClient {
     const url = new URL(this.opts.url);
     url.searchParams.set("workspace_slug", this.opts.workspaceSlug);
     url.searchParams.set("client_platform", "mobile");
-    url.searchParams.set("client_os", "ios");
+    url.searchParams.set("client_os", normalizeClientOS(this.opts.clientOS ?? "unknown"));
     if (this.opts.clientVersion) {
       url.searchParams.set("client_version", this.opts.clientVersion);
     }

@@ -12,7 +12,6 @@
  */
 import { useCallback, useEffect } from "react";
 import {
-  ActionSheetIOS,
   ActivityIndicator,
   Alert,
   Linking,
@@ -25,6 +24,7 @@ import type { Issue } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
 import { Button } from "@/components/ui/button";
 import { IconButton } from "@/components/ui/icon-button";
+import { useActionSheet } from "@/components/ui/action-sheet";
 import { TimelineList } from "@/components/issue/timeline-list";
 import { AgentHeaderBadge } from "@/components/issue/agent-header-badge";
 import { InlineCommentComposer } from "@/components/issue/inline-comment-composer";
@@ -44,6 +44,7 @@ import { useCommentSelectStore } from "@/data/comment-select-store";
 import { useReplyTargetStore } from "@/data/stores/reply-target-store";
 
 export default function IssueDetail() {
+  const showActionSheet = useActionSheet();
   // `highlight` + `h` come from inbox deep-link (apps/mobile/app/(app)/
   // [workspace]/(tabs)/inbox.tsx). `highlight` is the target comment id;
   // `h` is a per-tap nonce so re-tapping the same row re-fires the
@@ -116,42 +117,64 @@ export default function IssueDetail() {
     const issueLink = webUrl
       ? `${webUrl}/${wsSlug}/issue/${issue.identifier}`
       : null;
-    const options: string[] = ["Cancel"];
-    options.push(isPinned ? "Unpin" : "Pin");
-    options.push("Edit details");
-    if (issueLink) options.push("Copy link");
-    if (issueLink) options.push("Open on web");
-    options.push("Delete issue");
-    const destructiveIndex = options.length - 1;
-    ActionSheetIOS.showActionSheetWithOptions(
-      {
-        options,
-        cancelButtonIndex: 0,
-        destructiveButtonIndex: destructiveIndex,
-        title: issue.identifier,
-      },
-      (i) => {
-        const label = options[i];
-        if (label === "Pin") {
-          createPin.mutate({ item_type: "issue", item_id: issue.id });
-        } else if (label === "Unpin") {
-          deletePin.mutate({ itemType: "issue", itemId: issue.id });
-        } else if (label === "Edit details") {
-          if (wsSlug) router.push(`/${wsSlug}/issue/${issue.id}/edit`);
-        } else if (label === "Copy link" && issueLink) {
-          Clipboard.setStringAsync(issueLink);
-        } else if (label === "Open on web" && issueLink) {
-          Linking.openURL(issueLink);
-        } else if (label === "Delete issue") {
-          confirmDelete(issue, () =>
-            deleteIssue.mutate(issue.id, {
-              onSuccess: () => router.back(),
-            }),
-          );
-        }
-      },
-    );
-  }, [issue, wsSlug, deleteIssue, isPinned, createPin, deletePin]);
+    showActionSheet({
+      title: issue.identifier,
+      items: [
+        { key: "cancel", label: "Cancel", role: "cancel", onPress: () => {} },
+        {
+          key: "pin",
+          label: isPinned ? "Unpin" : "Pin",
+          onPress: () => {
+            if (isPinned) {
+              deletePin.mutate({ itemType: "issue", itemId: issue.id });
+            } else {
+              createPin.mutate({ item_type: "issue", item_id: issue.id });
+            }
+          },
+        },
+        {
+          key: "edit",
+          label: "Edit details",
+          onPress: () => {
+            if (wsSlug) router.push(`/${wsSlug}/issue/${issue.id}/edit`);
+          },
+        },
+        ...(issueLink
+          ? [
+              {
+                key: "copy",
+                label: "Copy link",
+                onPress: () => void Clipboard.setStringAsync(issueLink),
+              },
+              {
+                key: "web",
+                label: "Open on web",
+                onPress: () => void Linking.openURL(issueLink),
+              },
+            ]
+          : []),
+        {
+          key: "delete",
+          label: "Delete issue",
+          role: "destructive" as const,
+          onPress: () =>
+            confirmDelete(issue, () =>
+              deleteIssue.mutate(issue.id, {
+                onSuccess: () => router.back(),
+              }),
+            ),
+        },
+      ],
+    });
+  }, [
+    issue,
+    wsSlug,
+    deleteIssue,
+    isPinned,
+    createPin,
+    deletePin,
+    showActionSheet,
+  ]);
 
   return (
     <View className="flex-1 bg-background">

@@ -2,7 +2,8 @@ import type { ExpoConfig, ConfigContext } from "expo/config";
 
 /**
  * Dynamic Expo config — replaces app.json so we can read APP_ENV at runtime
- * and switch bundleIdentifier / display name for dev / staging / production.
+ * and switch identifiers / display name for dev / staging / production /
+ * private builds.
  *
  * APP_ENV is set by package.json scripts:
  *   - dev          → APP_ENV unset (treated as "development")
@@ -13,19 +14,30 @@ export default ({ config }: ConfigContext): ExpoConfig => {
   const env = process.env.APP_ENV ?? "development";
   const isProd = env === "production";
   const isStaging = env === "staging";
+  const isPrivate = env === "private";
+
+  const androidPackage = isPrivate
+    ? (process.env.EXPO_ANDROID_PACKAGE_PRIVATE ?? "ai.multica.mobile.privateapp")
+    : isProd
+      ? (process.env.EXPO_ANDROID_PACKAGE_PROD ?? "ai.multica.mobile")
+      : isStaging
+        ? "ai.multica.mobile.staging"
+        : (process.env.EXPO_ANDROID_PACKAGE_DEV ?? "ai.multica.mobile.dev");
 
   return {
     ...config,
-    name: isProd
-      ? "Multica"
-      : isStaging
-        ? "Multica (Staging)"
-        : "Multica (Dev)",
+    name: isPrivate
+      ? "Multica (Private)"
+      : isProd
+        ? "Multica"
+        : isStaging
+          ? "Multica (Staging)"
+          : "Multica (Dev)",
     slug: "multica-mobile",
     version: "0.1.0",
     orientation: "portrait",
     userInterfaceStyle: "automatic",
-    scheme: "multica",
+    scheme: isPrivate ? "multica-private" : "multica",
     // 1024x1024 source shared with the desktop client
     // (apps/desktop/build/icon.png). Expo prebuild generates every required
     // iOS icon size from this single PNG.
@@ -60,6 +72,16 @@ export default ({ config }: ConfigContext): ExpoConfig => {
           ? "ai.multica.mobile.staging"
           : (process.env.EXPO_BUNDLE_IDENTIFIER_DEV ?? "ai.multica.mobile.dev"),
     },
+    android: {
+      package: androidPackage,
+      permissions: ["android.permission.CAMERA"],
+      icon: "./assets/icon-android-legacy.png",
+      adaptiveIcon: {
+        foregroundImage: "./assets/icon-android-foreground.png",
+        backgroundColor: "#111827",
+        monochromeImage: "./assets/icon-android-monochrome.png",
+      },
+    },
     plugins: [
       "expo-router",
       "expo-secure-store",
@@ -68,13 +90,16 @@ export default ({ config }: ConfigContext): ExpoConfig => {
       [
         "expo-image-picker",
         {
+          // Picker permission strings. Camera is requested only when the
+          // user taps Take Photo; microphone remains disabled because the
+          // app captures still images only.
           // iOS NSPhotoLibraryUsageDescription. Without this string in
           // Info.plist, calling launchImageLibraryAsync hard-crashes on
-          // iOS 14+. Camera + microphone are disabled — we only ever read
-          // from the existing photo library.
+          // iOS 14+.
           photosPermission:
             "Allow Multica to access your photos to attach images to issues and comments.",
-          cameraPermission: false,
+          cameraPermission:
+            "Allow Multica to use your camera to attach photos to issues and comments.",
           microphonePermission: false,
         },
       ],
@@ -83,6 +108,11 @@ export default ({ config }: ConfigContext): ExpoConfig => {
         {
           ios: {
             buildReactNativeFromSource: true,
+          },
+          android: {
+            compileSdkVersion: 36,
+            targetSdkVersion: 36,
+            buildToolsVersion: "36.0.0",
           },
         },
       ],

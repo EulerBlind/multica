@@ -9,9 +9,10 @@
  *   - image    → filename + image icon. Tap opens the lightbox using the
  *                LOCAL file:// uri so completed and uploading items both
  *                preview without waiting for the server URL.
- *   - file     → filename + document icon. Tap opens the canonical
- *                download_url in Safari once the upload completed; before
- *                completion the tap is a no-op.
+ *   - file     → filename + document icon. After upload, text-backed files
+ *                enter the in-app preview while other types keep system
+ *                preview / download fallback; before completion tap is a
+ *                no-op.
  *
  * Capsule (not thumbnail) by design: the previous version showed an actual
  * image preview inside a 64x64 card. The user feedback was that the preview
@@ -28,8 +29,11 @@
 import { useMemo } from "react";
 import { ActivityIndicator, Linking, Pressable, ScrollView, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import { router } from "expo-router";
 import { resolveAttachmentUrl } from "@/lib/attachment-url";
+import { getAttachmentOpenMode } from "@/lib/attachment-preview";
 import { useLightbox } from "@/lib/markdown/lightbox-provider";
+import { useWorkspaceStore } from "@/data/workspace-store";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { THEME } from "@/lib/theme";
 import { Text } from "@/components/ui/text";
@@ -70,8 +74,8 @@ export interface ComposerAttachmentItem {
    *  URL the server returns. The composer submits by id, not url; the
    *  field is kept for inline-insert affordances or debugging. */
   url?: string;
-  /** Populated when status === "completed" — signed HTTPS link to open in
-   *  Safari for file chips. Mirrors web's "download" path. */
+  /** Populated when status === "completed" — signed HTTPS link used by
+   *  system preview / download fallback. */
   downloadUrl?: string;
   /** Populated when status === "failed" — short human-readable error. */
   error?: string;
@@ -178,6 +182,9 @@ function AttachmentChipView({ item, onRemove, onRetry }: AttachmentChipProps) {
   const { colorScheme } = useColorScheme();
   const theme = THEME[colorScheme];
   const { open } = useLightbox();
+  const workspaceSlug = useWorkspaceStore(
+    (state) => state.currentWorkspaceSlug,
+  );
 
   const isImage = useMemo(
     () => item.mimeType.startsWith("image/"),
@@ -195,16 +202,20 @@ function AttachmentChipView({ item, onRemove, onRetry }: AttachmentChipProps) {
       // no signed-URL round-trip, works the same pre/post upload.
       open(item.localUri);
     } else {
-      // Non-image file chip: open the canonical download URL in Safari.
-      // `downloadUrl` comes from `api.uploadFile(...).download_url`, which
-      // on non-CloudFront deployments is a server-relative path like
-      // `/api/attachments/{id}/download` (MUL-2976). RN's `Linking.openURL`
-      // requires an absolute http(s) URL — `Cannot open URL` otherwise — so
-      // resolve against `EXPO_PUBLIC_API_URL` first. Already-absolute
-      // CloudFront/presigned URLs pass through unchanged. `null` (no
-      // downloadUrl yet) falls through to a no-op.
+      const mode = getAttachmentOpenMode(item.mimeType, item.filename);
+      if (mode === "in-app" && item.id && workspaceSlug) {
+        router.push({
+          pathname: "/[workspace]/attachment/[id]/preview",
+          params: { workspace: workspaceSlug, id: item.id },
+        });
+        return;
+      }
+
+      // Binary preview is delegated to the OS; unknown types preserve the
+      // existing download fallback. Server-relative URLs are made absolute
+      // before crossing the React Native Linking boundary.
       const target = resolveAttachmentUrl(item.downloadUrl);
-      if (target) void Linking.openURL(target);
+      if (target) void Linking.openURL(target).catch(() => undefined);
     }
   };
 

@@ -64,7 +64,7 @@ export type CreateCommentVars = {
   content: string;
   /** When set, the new comment is a threaded reply to this comment id. */
   parentId?: string;
-  /** Attachment ids previously returned by `useFileAttach.pickAndUpload*`,
+  /** Completed ids returned by the shared mobile attachment upload hook,
    *  filtered by the caller to only those whose `url` is still referenced
    *  in `content`. The server re-parents each attachment from issue-scoped
    *  to comment-scoped so a `DELETE /comment/:id` cascades the attachments

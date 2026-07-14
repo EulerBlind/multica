@@ -197,6 +197,9 @@ type Attachment struct {
 	ChatMessageID   pgtype.UUID        `json:"chat_message_id"`
 	TaskID          pgtype.UUID        `json:"task_id"`
 	SourceContextID pgtype.UUID        `json:"source_context_id"`
+	Lifecycle       string             `json:"lifecycle"`
+	// Transient reservation granting one quick-create task permission to consume this member-owned draft.
+	QuickCreateTaskID pgtype.UUID `json:"quick_create_task_id"`
 }
 
 type Autopilot struct {

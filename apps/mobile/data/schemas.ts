@@ -70,6 +70,23 @@ export const AttachmentSchema: z.ZodType<Attachment> = z.object({
  *  rendering — image URIs simply fail to resolve and fall back to fetch. */
 export const AttachmentListSchema = z.array(AttachmentSchema).default([]);
 export const EMPTY_ATTACHMENT_LIST: Attachment[] = [];
+export const EMPTY_ATTACHMENT: Attachment = {
+  id: "",
+  workspace_id: "",
+  issue_id: null,
+  comment_id: null,
+  chat_session_id: null,
+  chat_message_id: null,
+  uploader_type: "",
+  uploader_id: "",
+  filename: "",
+  url: "",
+  download_url: "",
+  markdown_url: "",
+  content_type: "",
+  size_bytes: 0,
+  created_at: "",
+};
 
 /** Comment write endpoints all return a full Comment. Used by createComment /
  *  updateComment / resolveComment / unresolveComment via fetchValidatedWith.

@@ -7335,6 +7335,13 @@ func (s *TaskService) sourceContextAttachedByTask(ctx context.Context, task db.A
 	return row.State == "attached" && row.IssueID.Valid && row.OriginTaskID == task.ID, nil
 }
 
+// QuickCreateContextForTask exposes the server-parsed quick-create marker to
+// transport handlers that must authorize a task-scoped operation. Callers
+// must still verify task token, agent, workspace, and task status.
+func (s *TaskService) QuickCreateContextForTask(task db.AgentTaskQueue) (QuickCreateContext, bool) {
+	return s.parseQuickCreateContext(task)
+}
+
 // maxQuickCreateFailureDetailRunes bounds the failure reason lifted from a
 // quick-create task's final output. A genuine CLI error (a duplicate message,
 // a validation error) is short; an output far larger than this is a runaway

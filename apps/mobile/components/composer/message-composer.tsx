@@ -44,15 +44,12 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { Alert, Keyboard, Pressable, TextInput, View } from "react-native";
+import { Keyboard, Pressable, TextInput, View } from "react-native";
 import { KeyboardStickyView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { router, type Href } from "expo-router";
 import * as Haptics from "expo-haptics";
-import * as ImagePicker from "expo-image-picker";
-import * as DocumentPicker from "expo-document-picker";
-import { api, MAX_FILE_SIZE } from "@/data/api";
 import { useMentionDraftStore } from "@/data/stores/mention-draft-store";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { stripMarkdown } from "@/lib/strip-markdown";
@@ -61,9 +58,9 @@ import { Text } from "@/components/ui/text";
 import { IconButton } from "@/components/ui/icon-button";
 import {
   ComposerAttachmentRow,
-  type ComposerAttachmentItem,
   type MentionChip,
 } from "@/components/issue/composer-attachment-row";
+import { useAttachmentUploads } from "@/components/issue/use-attachment-uploads";
 
 export interface MessageComposerReplyTarget {
   actorName: string;
@@ -131,10 +128,6 @@ interface Props {
   manageKeyboard?: boolean;
 }
 
-function makeLocalId(): string {
-  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
 /** Serialises mention chips into the markdown link form the backend
  *  regex parser recognises. The string lands at the START of the
  *  outgoing content; mobile can't position mentions inline because the
@@ -178,7 +171,17 @@ export function MessageComposer({
   const inputRef = useRef<TextInput>(null);
   const [expanded, setExpanded] = useState(false);
   const [internalText, setInternalText] = useState("");
-  const [attachments, setAttachments] = useState<ComposerAttachmentItem[]>([]);
+  const {
+    attachments,
+    setAttachments,
+    hasInFlightUpload,
+    chooseImage,
+    takePhoto,
+    chooseFile,
+    removeAttachment,
+    retryAttachment,
+    markCommitted,
+  } = useAttachmentUploads(uploadContext);
   const [submitting, setSubmitting] = useState(false);
 
   // Hybrid controlled / uncontrolled pattern (React-canonical). Chat
@@ -223,7 +226,6 @@ export function MessageComposer({
     requestAnimationFrame(() => inputRef.current?.focus());
   }
 
-  const hasInFlightUpload = attachments.some((a) => a.status === "uploading");
   const canSend =
     !disabled &&
     !isSending &&
@@ -275,6 +277,7 @@ export function MessageComposer({
         attachmentIds: activeIds,
         mentions: mentionsSnap,
       });
+      markCommitted(activeIds);
       // Success → fully exit composing mode. Explicit triple-step
       // because a missing blur leaves the keyboard up; missing
       // Keyboard.dismiss races on iOS when focus is in-flight; missing
@@ -299,133 +302,9 @@ export function MessageComposer({
     setText,
     clearMentions,
     onSubmit,
+    markCommitted,
+    setAttachments,
   ]);
-
-  /** Streams a picked asset to /api/upload-file, updating the matching
-   *  thumbnail's status as it goes. Pulled out so retry can call it
-   *  again without re-opening the picker. */
-  const startUpload = useCallback(
-    async (
-      localId: string,
-      asset: { uri: string; name: string; type: string },
-    ) => {
-      try {
-        const result = await api.uploadFile(asset, uploadContext);
-        setAttachments((prev) =>
-          prev.map((it) =>
-            it.localId === localId
-              ? {
-                  ...it,
-                  status: "completed",
-                  id: result.id,
-                  url: result.url,
-                  downloadUrl: result.download_url,
-                }
-              : it,
-          ),
-        );
-      } catch (err) {
-        const message = err instanceof Error ? err.message : "Unknown error";
-        setAttachments((prev) =>
-          prev.map((it) =>
-            it.localId === localId
-              ? { ...it, status: "failed", error: message }
-              : it,
-          ),
-        );
-      }
-    },
-    [uploadContext],
-  );
-
-  const onImagePress = useCallback(async () => {
-    const picker = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      quality: 1,
-    });
-    if (picker.canceled) return;
-    const picked = picker.assets[0];
-    if (!picked) return;
-    if (picked.fileSize != null && picked.fileSize > MAX_FILE_SIZE) {
-      Alert.alert("File too large", "Files must be smaller than 100 MB.");
-      return;
-    }
-    const filename = picked.fileName ?? `image-${Date.now()}.jpg`;
-    const mimeType = picked.mimeType ?? "image/jpeg";
-    const localId = makeLocalId();
-    setAttachments((prev) => [
-      ...prev,
-      {
-        localId,
-        localUri: picked.uri,
-        filename,
-        mimeType,
-        status: "uploading",
-      },
-    ]);
-    requestAnimationFrame(() => inputRef.current?.focus());
-    await startUpload(localId, {
-      uri: picked.uri,
-      name: filename,
-      type: mimeType,
-    });
-  }, [startUpload]);
-
-  const onFilePress = useCallback(async () => {
-    const picker = await DocumentPicker.getDocumentAsync({
-      type: "*/*",
-      copyToCacheDirectory: true,
-    });
-    if (picker.canceled) return;
-    const picked = picker.assets[0];
-    if (!picked) return;
-    if (picked.size != null && picked.size > MAX_FILE_SIZE) {
-      Alert.alert("File too large", "Files must be smaller than 100 MB.");
-      return;
-    }
-    const mimeType = picked.mimeType ?? "application/octet-stream";
-    const localId = makeLocalId();
-    setAttachments((prev) => [
-      ...prev,
-      {
-        localId,
-        localUri: picked.uri,
-        filename: picked.name,
-        mimeType,
-        status: "uploading",
-      },
-    ]);
-    requestAnimationFrame(() => inputRef.current?.focus());
-    await startUpload(localId, {
-      uri: picked.uri,
-      name: picked.name,
-      type: mimeType,
-    });
-  }, [startUpload]);
-
-  const onRemoveAttachment = useCallback((localId: string) => {
-    setAttachments((prev) => prev.filter((it) => it.localId !== localId));
-  }, []);
-
-  const onRetryAttachment = useCallback(
-    (localId: string) => {
-      const item = attachments.find((it) => it.localId === localId);
-      if (!item) return;
-      setAttachments((prev) =>
-        prev.map((it) =>
-          it.localId === localId
-            ? { ...it, status: "uploading", error: undefined }
-            : it,
-        ),
-      );
-      void startUpload(localId, {
-        uri: item.localUri,
-        name: item.filename,
-        type: item.mimeType,
-      });
-    },
-    [attachments, startUpload],
-  );
 
   const onAtPress = useCallback(() => {
     Haptics.selectionAsync().catch(() => {});
@@ -527,8 +406,8 @@ export function MessageComposer({
               mentions={mentions}
               attachments={attachments}
               onRemoveMention={removeMention}
-              onRemoveAttachment={onRemoveAttachment}
-              onRetryAttachment={onRetryAttachment}
+              onRemoveAttachment={removeAttachment}
+              onRetryAttachment={retryAttachment}
             />
           </View>
         ) : null}
@@ -559,16 +438,23 @@ export function MessageComposer({
             className="h-8 w-8"
           />
           <IconButton
+            name="camera-outline"
+            iconSize={20}
+            onPress={() => void takePhoto()}
+            accessibilityLabel="Take photo"
+            className="h-8 w-8"
+          />
+          <IconButton
             name="image-outline"
             iconSize={20}
-            onPress={onImagePress}
+            onPress={() => void chooseImage()}
             accessibilityLabel="Upload image"
             className="h-8 w-8"
           />
           <IconButton
             name="attach-outline"
             iconSize={20}
-            onPress={onFilePress}
+            onPress={() => void chooseFile()}
             accessibilityLabel="Upload file"
             className="h-8 w-8"
           />
