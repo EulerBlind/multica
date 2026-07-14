@@ -43,6 +43,11 @@ import { router } from "expo-router";
 import { EnrichedMarkdownText } from "react-native-enriched-markdown";
 import type { Attachment } from "@multica/core/types";
 import { useWorkspaceStore } from "@/data/workspace-store";
+import {
+  findAttachmentForUrl,
+  getAttachmentOpenMode,
+} from "@/lib/attachment-preview";
+import { resolveAttachmentUrl } from "@/lib/attachment-url";
 import { preprocessMobileMarkdown } from "./preprocess";
 import { useMarkdownStyle } from "./markdown-style";
 import { splitMarkdown } from "./split-markdown";
@@ -163,6 +168,38 @@ export function Markdown({
         }
         return;
       }
+
+      // `!file[name](url)` is preprocessed into a normal markdown link, so
+      // every issue/comment/chat surface reaches this shared callback. Match
+      // the link back to its attachment before falling through to external
+      // navigation, then apply the same preview/system/download classifier as
+      // standalone attachment cards.
+      const attachment = findAttachmentForUrl(url, attachments);
+      if (attachment) {
+        const openMode = getAttachmentOpenMode(
+          attachment.content_type,
+          attachment.filename,
+        );
+        if (openMode === "in-app" && wsSlug) {
+          router.push({
+            pathname: "/[workspace]/attachment/[id]/preview",
+            params: { workspace: wsSlug, id: attachment.id },
+          });
+          return;
+        }
+
+        const target = resolveAttachmentUrl(
+          attachment.download_url ||
+            attachment.markdown_url ||
+            attachment.url ||
+            `/api/attachments/${attachment.id}/download`,
+        );
+        if (target) {
+          Linking.openURL(target).catch(() => undefined);
+        }
+        return;
+      }
+
       // Everything else — http(s), mailto, tel, app-scheme deep links —
       // hand off to the system. Linking.openURL throws if no app handles
       // the URL; the catch keeps a stray tap from crashing the screen.
@@ -170,7 +207,7 @@ export function Markdown({
         // Silent: failing loudly is worse than a no-op tap.
       });
     },
-    [wsSlug],
+    [attachments, wsSlug],
   );
 
   if (segments.length === 0) return null;

@@ -147,6 +147,13 @@ export default function WorkspaceLayout() {
           }}
         />
         <Stack.Screen
+          name="attachment/[id]/preview"
+          options={{
+            title: "Attachment preview",
+            headerBackTitle: "Back",
+          }}
+        />
+        <Stack.Screen
           name="project/[id]/edit"
           options={{
             title: "Edit Project",

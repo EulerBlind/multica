@@ -9,13 +9,12 @@
  * Per-record realtime: `useProjectRealtime(id, onDeleted=back)` subscribes
  * to `project:updated` (full replace) and `project:deleted` (pop back).
  *
- * Right-top "…" menu (ActionSheetIOS) → Edit / Delete. Delete asks for
+ * Right-top "…" menu → Edit / Delete. Delete asks for
  * confirmation via `Alert.alert` per iOS HIG (destructive actions need
  * a second tap).
  */
 import { useCallback } from "react";
 import {
-  ActionSheetIOS,
   ActivityIndicator,
   Alert,
   Linking,
@@ -29,6 +28,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Text } from "@/components/ui/text";
 import { Button } from "@/components/ui/button";
 import { IconButton } from "@/components/ui/icon-button";
+import { useActionSheet } from "@/components/ui/action-sheet";
 import { ProjectHeaderCard } from "@/components/project/project-header-card";
 import { ProjectPropertiesSection } from "@/components/project/project-properties-section";
 import { ProjectRelatedIssues } from "@/components/project/project-related-issues";
@@ -46,6 +46,7 @@ import { useProjectRealtime } from "@/data/realtime/use-project-realtime";
 import { useWorkspaceStore } from "@/data/workspace-store";
 
 export default function ProjectDetail() {
+  const showActionSheet = useActionSheet();
   const { id } = useLocalSearchParams<{ id: string }>();
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
@@ -87,43 +88,45 @@ export default function ProjectDetail() {
   const onPressMore = () => {
     if (!project) return;
     const wsUrl = process.env.EXPO_PUBLIC_WEB_URL;
-    const options = [
-      "Cancel",
-      isPinned ? "Unpin" : "Pin",
-      "Edit details",
-      ...(wsUrl ? ["Open on web"] : []),
-      "Delete",
-    ];
-    const destructiveIndex = options.length - 1;
-    ActionSheetIOS.showActionSheetWithOptions(
-      {
-        options,
-        cancelButtonIndex: 0,
-        destructiveButtonIndex: destructiveIndex,
-      },
-      (i) => {
-        const label = options[i];
-        if (label === "Pin") {
-          createPin.mutate({ item_type: "project", item_id: project.id });
-          return;
-        }
-        if (label === "Unpin") {
-          deletePin.mutate({ itemType: "project", itemId: project.id });
-          return;
-        }
-        if (label === "Edit details") {
-          if (wsSlug) router.push(`/${wsSlug}/project/${id}/edit`);
-          return;
-        }
-        if (label === "Open on web" && wsUrl) {
-          Linking.openURL(`${wsUrl}/${wsSlug}/projects/${id}`);
-          return;
-        }
-        if (i === destructiveIndex) {
-          onDelete();
-        }
-      },
-    );
+    showActionSheet({
+      items: [
+        { key: "cancel", label: "Cancel", role: "cancel", onPress: () => {} },
+        {
+          key: "pin",
+          label: isPinned ? "Unpin" : "Pin",
+          onPress: () => {
+            if (isPinned) {
+              deletePin.mutate({ itemType: "project", itemId: project.id });
+            } else {
+              createPin.mutate({ item_type: "project", item_id: project.id });
+            }
+          },
+        },
+        {
+          key: "edit",
+          label: "Edit details",
+          onPress: () => {
+            if (wsSlug) router.push(`/${wsSlug}/project/${id}/edit`);
+          },
+        },
+        ...(wsUrl
+          ? [
+              {
+                key: "web",
+                label: "Open on web",
+                onPress: () =>
+                  void Linking.openURL(`${wsUrl}/${wsSlug}/projects/${id}`),
+              },
+            ]
+          : []),
+        {
+          key: "delete",
+          label: "Delete",
+          role: "destructive" as const,
+          onPress: onDelete,
+        },
+      ],
+    });
   };
 
   const onDelete = () => {

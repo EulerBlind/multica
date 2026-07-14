@@ -1,7 +1,7 @@
 /**
  * Profile edit subscreen — name + avatar.
  *
- * Avatar tap opens an iOS native ActionSheet (Take Photo / Choose from Library
+ * Avatar tap opens the platform action sheet (Take Photo / Choose from Library
  * / Remove). Mirrors the avatar upload flow in
  * packages/views/settings/components/account-tab.tsx but the picker uses
  * native APIs per CLAUDE.md "iOS native > RNR > discuss" waterfall.
@@ -12,7 +12,6 @@
  */
 import { useEffect, useState } from "react";
 import {
-  ActionSheetIOS,
   Alert,
   ActivityIndicator,
   Pressable,
@@ -25,6 +24,7 @@ import { Button } from "@/components/ui/button";
 import { TextField } from "@/components/ui/text-field";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Separator } from "@/components/ui/separator";
+import { useActionSheet } from "@/components/ui/action-sheet";
 import { useAuthStore } from "@/data/auth-store";
 import { api } from "@/data/api";
 import type { FileAsset } from "@/data/api";
@@ -43,6 +43,7 @@ function initialsOf(name: string | undefined): string {
 }
 
 export default function ProfileSettingsScreen() {
+  const showActionSheet = useActionSheet();
   const user = useAuthStore((s) => s.user);
   const setUser = useAuthStore((s) => s.setUser);
 
@@ -59,24 +60,31 @@ export default function ProfileSettingsScreen() {
   const dirty = name.trim() !== (user?.name ?? "") && name.trim().length > 0;
 
   const handleAvatarPick = () => {
-    const options = ["Take Photo", "Choose from Library", "Remove Photo", "Cancel"];
-    const removeIndex = user?.avatar_url ? 2 : -1;
-    const cancelIndex = user?.avatar_url ? 3 : 2;
-    const visibleOptions = user?.avatar_url ? options : options.filter((_, i) => i !== 2);
-
-    ActionSheetIOS.showActionSheetWithOptions(
-      {
-        options: visibleOptions,
-        cancelButtonIndex: cancelIndex,
-        destructiveButtonIndex: removeIndex >= 0 ? removeIndex : undefined,
-      },
-      async (index) => {
-        if (index === cancelIndex) return;
-        if (index === 0) await pickFromCamera();
-        else if (index === 1) await pickFromLibrary();
-        else if (index === removeIndex) await removeAvatar();
-      },
-    );
+    showActionSheet({
+      items: [
+        {
+          key: "camera",
+          label: "Take Photo",
+          onPress: () => void pickFromCamera(),
+        },
+        {
+          key: "library",
+          label: "Choose from Library",
+          onPress: () => void pickFromLibrary(),
+        },
+        ...(user?.avatar_url
+          ? [
+              {
+                key: "remove",
+                label: "Remove Photo",
+                role: "destructive" as const,
+                onPress: () => void removeAvatar(),
+              },
+            ]
+          : []),
+        { key: "cancel", label: "Cancel", role: "cancel", onPress: () => {} },
+      ],
+    });
   };
 
   const pickFromCamera = async () => {

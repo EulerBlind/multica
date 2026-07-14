@@ -1,10 +1,5 @@
 import { useMemo } from "react";
-import {
-  ActionSheetIOS,
-  Alert,
-  FlatList,
-  View,
-} from "react-native";
+import { Alert, FlatList, View } from "react-native";
 import { useQuery } from "@tanstack/react-query";
 import { router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
@@ -15,6 +10,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Header } from "@/components/ui/header";
 import { IconButton } from "@/components/ui/icon-button";
 import { HeaderActions } from "@/components/ui/app-header-actions";
+import { useActionSheet } from "@/components/ui/action-sheet";
 import { SwipeableInboxRow } from "@/components/inbox/swipeable-inbox-row";
 import { inboxListOptions } from "@/data/queries/inbox";
 import {
@@ -34,6 +30,7 @@ import {
 } from "@/lib/inbox-display";
 
 export default function Inbox() {
+  const showActionSheet = useActionSheet();
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
   const { colorScheme } = useColorScheme();
@@ -70,40 +67,46 @@ export default function Inbox() {
   // first (most common batch op); "Archive all" is destructive so it gets
   // the iOS red treatment + Alert confirm.
   const onPressMenu = () => {
-    const options = [
-      "Cancel",
-      "Mark all read",
-      "Archive all read",
-      "Archive completed",
-      "Archive all",
-    ];
-    ActionSheetIOS.showActionSheetWithOptions(
-      {
-        options,
-        cancelButtonIndex: 0,
-        destructiveButtonIndex: 4,
-        title: "Inbox",
-      },
-      (i) => {
-        if (i === 1) markAllRead.mutate();
-        else if (i === 2) archiveAllRead.mutate();
-        else if (i === 3) archiveCompleted.mutate();
-        else if (i === 4) {
-          Alert.alert(
-            "Archive all?",
-            "This archives every inbox item, read or unread. You can still find them via the issue pages.",
-            [
-              { text: "Cancel", style: "cancel" },
-              {
-                text: "Archive all",
-                style: "destructive",
-                onPress: () => archiveAll.mutate(),
-              },
-            ],
-          );
-        }
-      },
-    );
+    showActionSheet({
+      title: "Inbox",
+      items: [
+        { key: "cancel", label: "Cancel", role: "cancel", onPress: () => {} },
+        {
+          key: "read",
+          label: "Mark all read",
+          onPress: () => markAllRead.mutate(),
+        },
+        {
+          key: "archive-read",
+          label: "Archive all read",
+          onPress: () => archiveAllRead.mutate(),
+        },
+        {
+          key: "archive-completed",
+          label: "Archive completed",
+          onPress: () => archiveCompleted.mutate(),
+        },
+        {
+          key: "archive-all",
+          label: "Archive all",
+          role: "destructive",
+          onPress: () => {
+            Alert.alert(
+              "Archive all?",
+              "This archives every inbox item, read or unread. You can still find them via the issue pages.",
+              [
+                { text: "Cancel", style: "cancel" },
+                {
+                  text: "Archive all",
+                  style: "destructive",
+                  onPress: () => archiveAll.mutate(),
+                },
+              ],
+            );
+          },
+        },
+      ],
+    });
   };
 
   return (
