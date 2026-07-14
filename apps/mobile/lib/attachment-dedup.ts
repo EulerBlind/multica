@@ -1,5 +1,24 @@
-import type { Attachment } from "@multica/core/types";
-import { contentReferencesAttachment } from "@multica/core/types";
+import {
+  contentReferencesAttachment,
+  type Attachment,
+} from "@multica/core/types";
+
+/**
+ * Attachments persisted directly on an issue, excluding attachments owned by
+ * comments on that issue. `GET /issues/:id/attachments` returns both shapes,
+ * so issue detail must filter before rendering its standalone list or comment
+ * files would appear twice.
+ */
+export function issueOwnedAttachments(
+  attachments: Attachment[] | undefined,
+  issueId: string,
+): Attachment[] {
+  if (!attachments || !issueId) return [];
+  return attachments.filter(
+    (attachment) =>
+      attachment.issue_id === issueId && attachment.comment_id == null,
+  );
+}
 
 /**
  * The attachments to render as standalone cards below a message / comment

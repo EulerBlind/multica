@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/storage"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -464,6 +465,285 @@ func TestUploadFile_RejectsForeignChatSession(t *testing.T) {
 	testHandler.UploadFile(w, req)
 	if w.Code != http.StatusNotFound && w.Code != http.StatusForbidden && w.Code != http.StatusBadRequest {
 		t.Fatalf("UploadFile with unknown chat_session_id: expected 4xx, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestUploadFileRejectsDirectCommentBindingBeforeStorage(t *testing.T) {
+	originalStorage := testHandler.Storage
+	store := &mockStorage{}
+	testHandler.Storage = store
+	t.Cleanup(func() { testHandler.Storage = originalStorage })
+
+	commentAuthorID := createAttachmentContractMember(t)
+	issueID, issueResponse := createAttachmentContractIssue(t, commentAuthorID, "comment upload boundary "+uuid.NewString(), nil)
+	if issueResponse.Code != http.StatusCreated {
+		t.Fatalf("create comment issue: got %d: %s", issueResponse.Code, issueResponse.Body.String())
+	}
+	var commentID string
+	if err := testPool.QueryRow(context.Background(), `
+		INSERT INTO comment (workspace_id, issue_id, author_type, author_id, content)
+		VALUES ($1, $2, 'member', $3, 'owned by another member')
+		RETURNING id
+	`, testWorkspaceID, issueID, commentAuthorID).Scan(&commentID); err != nil {
+		t.Fatalf("create target comment: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM comment WHERE id = $1`, commentID)
+	})
+
+	for _, tc := range []struct {
+		name       string
+		uploaderID string
+	}{
+		{name: "different member", uploaderID: testUserID},
+		{name: "comment author", uploaderID: commentAuthorID},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			filename := "blocked-comment-upload-" + uuid.NewString() + ".txt"
+			var body bytes.Buffer
+			writer := multipart.NewWriter(&body)
+			part, err := writer.CreateFormFile("file", filename)
+			if err != nil {
+				t.Fatalf("create file field: %v", err)
+			}
+			if _, err := part.Write([]byte("must never reach storage")); err != nil {
+				t.Fatalf("write file: %v", err)
+			}
+			if err := writer.WriteField("comment_id", commentID); err != nil {
+				t.Fatalf("write comment_id: %v", err)
+			}
+			if err := writer.Close(); err != nil {
+				t.Fatalf("close multipart body: %v", err)
+			}
+
+			req := httptest.NewRequest(http.MethodPost, "/api/upload-file", &body)
+			req.Header.Set("Content-Type", writer.FormDataContentType())
+			req.Header.Set("X-User-ID", tc.uploaderID)
+			req.Header.Set("X-Workspace-ID", testWorkspaceID)
+			w := httptest.NewRecorder()
+			testHandler.UploadFile(w, req)
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("direct comment upload: got %d: %s", w.Code, w.Body.String())
+			}
+
+			var rows int
+			if err := testPool.QueryRow(context.Background(), `
+				SELECT count(*) FROM attachment WHERE workspace_id = $1 AND filename = $2
+			`, testWorkspaceID, filename).Scan(&rows); err != nil {
+				t.Fatalf("count attachment rows: %v", err)
+			}
+			if rows != 0 {
+				t.Fatalf("direct comment upload created %d attachment rows", rows)
+			}
+			store.mu.Lock()
+			storedObjects := len(store.files)
+			store.mu.Unlock()
+			if storedObjects != 0 {
+				t.Fatalf("direct comment upload wrote %d storage objects", storedObjects)
+			}
+		})
+	}
+
+	t.Run("draft upload binds through comment API", func(t *testing.T) {
+		filename := "draft-comment-upload-" + uuid.NewString() + ".txt"
+		var body bytes.Buffer
+		writer := multipart.NewWriter(&body)
+		part, err := writer.CreateFormFile("file", filename)
+		if err != nil {
+			t.Fatalf("create file field: %v", err)
+		}
+		if _, err := part.Write([]byte("bind through controlled comment API")); err != nil {
+			t.Fatalf("write file: %v", err)
+		}
+		if err := writer.WriteField("issue_id", issueID); err != nil {
+			t.Fatalf("write issue_id: %v", err)
+		}
+		if err := writer.Close(); err != nil {
+			t.Fatalf("close multipart body: %v", err)
+		}
+
+		req := httptest.NewRequest(http.MethodPost, "/api/upload-file", &body)
+		req.Header.Set("Content-Type", writer.FormDataContentType())
+		req.Header.Set("X-User-ID", commentAuthorID)
+		req.Header.Set("X-Workspace-ID", testWorkspaceID)
+		w := httptest.NewRecorder()
+		testHandler.UploadFile(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("draft upload: got %d: %s", w.Code, w.Body.String())
+		}
+		var attachment AttachmentResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &attachment); err != nil {
+			t.Fatalf("decode draft attachment: %v", err)
+		}
+		t.Cleanup(func() {
+			testPool.Exec(context.Background(), `DELETE FROM attachment WHERE id = $1`, attachment.ID)
+		})
+		var lifecycle, boundComment string
+		if err := testPool.QueryRow(context.Background(), `
+			SELECT lifecycle, COALESCE(comment_id::text, '') FROM attachment WHERE id = $1
+		`, attachment.ID).Scan(&lifecycle, &boundComment); err != nil {
+			t.Fatalf("load draft upload: %v", err)
+		}
+		if lifecycle != "draft" || boundComment != "" {
+			t.Fatalf("upload state=(%q,%q), want (draft,unbound)", lifecycle, boundComment)
+		}
+
+		commentReq := newRequest(http.MethodPost, "/api/issues/"+issueID+"/comments", map[string]any{
+			"content":        "controlled attachment bind",
+			"attachment_ids": []string{attachment.ID},
+		})
+		commentReq.Header.Set("X-User-ID", commentAuthorID)
+		commentReq = withURLParam(commentReq, "id", issueID)
+		commentResponse := httptest.NewRecorder()
+		testHandler.CreateComment(commentResponse, commentReq)
+		if commentResponse.Code != http.StatusCreated {
+			t.Fatalf("controlled comment bind: got %d: %s", commentResponse.Code, commentResponse.Body.String())
+		}
+		if err := testPool.QueryRow(context.Background(), `
+			SELECT lifecycle, COALESCE(comment_id::text, '') FROM attachment WHERE id = $1
+		`, attachment.ID).Scan(&lifecycle, &boundComment); err != nil {
+			t.Fatalf("load committed upload: %v", err)
+		}
+		if lifecycle != "committed" || boundComment == "" {
+			t.Fatalf("controlled bind state=(%q,%q), want (committed,bound)", lifecycle, boundComment)
+		}
+	})
+}
+
+func TestIssueAttachmentListHidesDraftsAcrossMembersUntilCommit(t *testing.T) {
+	originalStorage := testHandler.Storage
+	testHandler.Storage = &mockStorage{}
+	t.Cleanup(func() { testHandler.Storage = originalStorage })
+
+	uploaderID := createAttachmentContractMember(t)
+	viewerID := createAttachmentContractMember(t)
+	issueID, issueResponse := createAttachmentContractIssue(
+		t,
+		uploaderID,
+		"cross-member attachment visibility "+uuid.NewString(),
+		nil,
+	)
+	if issueResponse.Code != http.StatusCreated {
+		t.Fatalf("create issue: got %d: %s", issueResponse.Code, issueResponse.Body.String())
+	}
+
+	filename := "cross-member-visibility-" + uuid.NewString() + ".txt"
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("file", filename)
+	if err != nil {
+		t.Fatalf("create file field: %v", err)
+	}
+	if _, err := part.Write([]byte("visible only after commit")); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	if err := writer.WriteField("issue_id", issueID); err != nil {
+		t.Fatalf("write issue_id: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart body: %v", err)
+	}
+
+	uploadReq := httptest.NewRequest(http.MethodPost, "/api/upload-file", &body)
+	uploadReq.Header.Set("Content-Type", writer.FormDataContentType())
+	uploadReq.Header.Set("X-User-ID", uploaderID)
+	uploadReq.Header.Set("X-Workspace-ID", testWorkspaceID)
+	uploadResponse := httptest.NewRecorder()
+	testHandler.UploadFile(uploadResponse, uploadReq)
+	if uploadResponse.Code != http.StatusOK {
+		t.Fatalf("upload draft: got %d: %s", uploadResponse.Code, uploadResponse.Body.String())
+	}
+	var attachment AttachmentResponse
+	if err := json.Unmarshal(uploadResponse.Body.Bytes(), &attachment); err != nil {
+		t.Fatalf("decode draft attachment: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM attachment WHERE id = $1`, attachment.ID)
+	})
+
+	assertDBState := func(wantLifecycle string, wantBound bool) {
+		t.Helper()
+		var lifecycle, commentID string
+		if err := testPool.QueryRow(context.Background(), `
+			SELECT lifecycle, COALESCE(comment_id::text, '')
+			FROM attachment WHERE id = $1
+		`, attachment.ID).Scan(&lifecycle, &commentID); err != nil {
+			t.Fatalf("load attachment state: %v", err)
+		}
+		if lifecycle != wantLifecycle || (commentID != "") != wantBound {
+			t.Fatalf("attachment state=(%q,%q), want lifecycle=%q bound=%t", lifecycle, commentID, wantLifecycle, wantBound)
+		}
+	}
+
+	listAsViewer := func() []AttachmentResponse {
+		t.Helper()
+		req := newRequest(http.MethodGet, "/api/issues/"+issueID+"/attachments", nil)
+		req.Header.Set("X-User-ID", viewerID)
+		req = withURLParam(req, "id", issueID)
+		w := httptest.NewRecorder()
+		testHandler.ListAttachments(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("list attachments as second member: got %d: %s", w.Code, w.Body.String())
+		}
+		var attachments []AttachmentResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &attachments); err != nil {
+			t.Fatalf("decode attachment list: %v", err)
+		}
+		return attachments
+	}
+
+	getIssueAsViewer := func() IssueResponse {
+		t.Helper()
+		req := newRequest(http.MethodGet, "/api/issues/"+issueID, nil)
+		req.Header.Set("X-User-ID", viewerID)
+		req = withURLParam(req, "id", issueID)
+		w := httptest.NewRecorder()
+		testHandler.GetIssue(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("get issue as second member: got %d: %s", w.Code, w.Body.String())
+		}
+		var issue IssueResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &issue); err != nil {
+			t.Fatalf("decode issue: %v", err)
+		}
+		return issue
+	}
+
+	containsAttachment := func(attachments []AttachmentResponse) bool {
+		for _, candidate := range attachments {
+			if candidate.ID == attachment.ID {
+				return true
+			}
+		}
+		return false
+	}
+
+	assertDBState("draft", false)
+	if containsAttachment(listAsViewer()) {
+		t.Fatal("second member can see uncommitted attachment in attachment list")
+	}
+	if containsAttachment(getIssueAsViewer().Attachments) {
+		t.Fatal("second member can see uncommitted attachment in issue detail")
+	}
+
+	commentReq := newRequest(http.MethodPost, "/api/issues/"+issueID+"/comments", map[string]any{
+		"content":        "commit attachment through comment API",
+		"attachment_ids": []string{attachment.ID},
+	})
+	commentReq.Header.Set("X-User-ID", uploaderID)
+	commentReq = withURLParam(commentReq, "id", issueID)
+	commentResponse := httptest.NewRecorder()
+	testHandler.CreateComment(commentResponse, commentReq)
+	if commentResponse.Code != http.StatusCreated {
+		t.Fatalf("commit attachment: got %d: %s", commentResponse.Code, commentResponse.Body.String())
+	}
+
+	assertDBState("committed", true)
+	if !containsAttachment(listAsViewer()) {
+		t.Fatal("second member cannot see committed attachment in attachment list")
+	}
+	if !containsAttachment(getIssueAsViewer().Attachments) {
+		t.Fatal("second member cannot see committed attachment in issue detail")
 	}
 }
 

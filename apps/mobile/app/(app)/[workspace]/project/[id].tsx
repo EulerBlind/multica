@@ -9,13 +9,12 @@
  * Per-record realtime: `useProjectRealtime(id, onDeleted=back)` subscribes
  * to `project:updated` (full replace) and `project:deleted` (pop back).
  *
- * Right-top "…" menu (ActionSheetIOS) → Edit / Delete. Delete asks for
+ * Right-top "…" menu → Edit / Delete. Delete asks for
  * confirmation via `Alert.alert` per iOS HIG (destructive actions need
  * a second tap).
  */
 import { useCallback } from "react";
 import {
-  ActionSheetIOS,
   ActivityIndicator,
   Alert,
   Linking,
@@ -29,6 +28,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Text } from "@/components/ui/text";
 import { Button } from "@/components/ui/button";
 import { IconButton } from "@/components/ui/icon-button";
+import { useActionSheet } from "@/components/ui/action-sheet";
 import { ProjectHeaderCard } from "@/components/project/project-header-card";
 import { ProjectPropertiesSection } from "@/components/project/project-properties-section";
 import { ProjectRelatedIssues } from "@/components/project/project-related-issues";
@@ -47,6 +47,7 @@ import { useWorkspaceStore } from "@/data/workspace-store";
 import { useT } from "@/lib/i18n";
 
 export default function ProjectDetail() {
+  const showActionSheet = useActionSheet();
   const { id } = useLocalSearchParams<{ id: string }>();
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);

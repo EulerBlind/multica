@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { Attachment } from "@multica/core/types";
-import { standaloneAttachments } from "./attachment-dedup";
+import {
+  issueOwnedAttachments,
+  standaloneAttachments,
+} from "./attachment-dedup";
 
 function att(over: Partial<Attachment> = {}): Attachment {
   return {
@@ -63,5 +66,21 @@ describe("standaloneAttachments", () => {
     // filename/type/size, so it must be treated as the same file and dropped.
     const content = `![chart.png](${inline.markdown_url})`;
     expect(standaloneAttachments([inline, dup], content)).toEqual([]);
+  });
+});
+
+describe("issueOwnedAttachments", () => {
+  it("keeps only issue-level files and excludes comment/other-issue files", () => {
+    const own = att({ id: "own", issue_id: "issue-1", comment_id: null });
+    const comment = att({
+      id: "comment",
+      issue_id: "issue-1",
+      comment_id: "comment-1",
+    });
+    const other = att({ id: "other", issue_id: "issue-2", comment_id: null });
+
+    expect(issueOwnedAttachments([own, comment, other], "issue-1")).toEqual([
+      own,
+    ]);
   });
 });

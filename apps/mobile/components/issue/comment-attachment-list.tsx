@@ -19,15 +19,19 @@
  * For v1 we render images via the same `MarkdownImage` used by inline
  * markdown rendering (consistent aspect-ratio + lightbox behavior). Non-
  * image attachments render as a tappable file card showing 📎 + filename
- * + size hint, opening the canonical download URL on tap.
+ * + size hint. Text-backed formats enter the authenticated native preview;
+ * binary media use the OS preview; unsupported types retain download.
  */
 import { useMemo } from "react";
 import { Linking, Pressable, View } from "react-native";
+import { router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import type { Attachment } from "@multica/core/types";
 import { standaloneAttachments } from "@/lib/attachment-dedup";
 import { MarkdownImage } from "@/lib/markdown/markdown-image";
 import { resolveAttachmentUrl } from "@/lib/attachment-url";
+import { getAttachmentOpenMode } from "@/lib/attachment-preview";
+import { useWorkspaceStore } from "@/data/workspace-store";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { THEME } from "@/lib/theme";
 import { Text } from "@/components/ui/text";
@@ -90,27 +94,37 @@ function FileCard({
   attachment: Attachment;
   theme: typeof THEME["light"];
 }) {
+  const workspaceSlug = useWorkspaceStore(
+    (state) => state.currentWorkspaceSlug,
+  );
   const sizeLabel = formatBytes(attachment.size_bytes);
+  const openMode = getAttachmentOpenMode(
+    attachment.content_type,
+    attachment.filename,
+  );
+  const isPreviewable = openMode !== "download";
+
+  const open = () => {
+    if (openMode === "in-app" && workspaceSlug) {
+      router.push({
+        pathname: "/[workspace]/attachment/[id]/preview",
+        params: { workspace: workspaceSlug, id: attachment.id },
+      });
+      return;
+    }
+
+    // Media preview and unsupported-file download both hand the fresh
+    // canonical URL to the OS. Unknown types intentionally retain the old
+    // download behavior instead of navigating to a broken preview screen.
+    const target = resolveAttachmentUrl(attachment.download_url);
+    if (target) void Linking.openURL(target).catch(() => undefined);
+  };
+
   return (
     <Pressable
-      onPress={() => {
-        // download_url is the canonical link — opening it hands off to
-        // Safari which handles auth-token-free download + previewing for
-        // common types (PDF, txt). Mirrors what the markdown link renderer
-        // does for `[name](url)`.
-        //
-        // The backend may return a server-relative URL like
-        // `/api/attachments/{id}/download` when no CloudFront signer is
-        // configured (MUL-2976). RN's `Linking.openURL` requires an
-        // absolute http(s) URL — it returns "Cannot open URL" otherwise —
-        // so resolve against `EXPO_PUBLIC_API_URL` first.
-        const target = resolveAttachmentUrl(attachment.download_url);
-        if (target) {
-          void Linking.openURL(target);
-        }
-      }}
+      onPress={open}
       accessibilityRole="button"
-      accessibilityLabel={`Open ${attachment.filename}`}
+      accessibilityLabel={`${isPreviewable ? "Preview" : "Download"} ${attachment.filename}`}
       className="flex-row items-center gap-2 px-3 py-2 rounded-md bg-secondary/60 active:opacity-80"
     >
       <Ionicons
@@ -130,7 +144,7 @@ function FileCard({
         ) : null}
       </View>
       <Ionicons
-        name="download-outline"
+        name={isPreviewable ? "eye-outline" : "download-outline"}
         size={18}
         color={theme.mutedForeground}
       />

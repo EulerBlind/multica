@@ -132,7 +132,7 @@ func TestQuickCreateIssueParentTrustBoundary(t *testing.T) {
 	}
 
 	t.Run("same workspace parent enqueues with context", func(t *testing.T) {
-		attachmentID := "019ec09d-6222-722b-bdfa-427b105d80be"
+		attachmentID := createAttachmentContractDraft(t, testUserID, nil)
 		w := httptest.NewRecorder()
 		req := newRequest("POST", "/api/issues/quick-create", map[string]any{
 			"agent_id":        agentID,

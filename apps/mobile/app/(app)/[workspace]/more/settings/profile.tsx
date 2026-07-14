@@ -1,7 +1,7 @@
 /**
  * Profile edit subscreen — name + avatar.
  *
- * Avatar tap opens an iOS native ActionSheet (Take Photo / Choose from Library
+ * Avatar tap opens the platform action sheet (Take Photo / Choose from Library
  * / Remove). Mirrors the avatar upload flow in
  * packages/views/settings/components/account-tab.tsx but the picker uses
  * native APIs per CLAUDE.md "iOS native > RNR > discuss" waterfall.
@@ -12,7 +12,6 @@
  */
 import { useEffect, useState } from "react";
 import {
-  ActionSheetIOS,
   Alert,
   ActivityIndicator,
   Pressable,
@@ -25,6 +24,7 @@ import { Button } from "@/components/ui/button";
 import { TextField } from "@/components/ui/text-field";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Separator } from "@/components/ui/separator";
+import { useActionSheet } from "@/components/ui/action-sheet";
 import { useAuthStore } from "@/data/auth-store";
 import { api } from "@/data/api";
 import type { FileAsset } from "@/data/api";
@@ -44,6 +44,7 @@ function initialsOf(name: string | undefined): string {
 }
 
 export default function ProfileSettingsScreen() {
+  const showActionSheet = useActionSheet();
   const user = useAuthStore((s) => s.user);
   const setUser = useAuthStore((s) => s.setUser);
   const { t } = useT("settings");

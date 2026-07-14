@@ -12,7 +12,6 @@
  */
 import { useCallback, useEffect } from "react";
 import {
-  ActionSheetIOS,
   ActivityIndicator,
   Alert,
   Linking,
@@ -25,6 +24,7 @@ import type { Issue } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
 import { Button } from "@/components/ui/button";
 import { IconButton } from "@/components/ui/icon-button";
+import { useActionSheet } from "@/components/ui/action-sheet";
 import { TimelineList } from "@/components/issue/timeline-list";
 import { AgentHeaderBadge } from "@/components/issue/agent-header-badge";
 import { InlineCommentComposer } from "@/components/issue/inline-comment-composer";
@@ -45,6 +45,7 @@ import { useReplyTargetStore } from "@/data/stores/reply-target-store";
 import { useT } from "@/lib/i18n";
 
 export default function IssueDetail() {
+  const showActionSheet = useActionSheet();
   // `highlight` + `h` come from inbox deep-link (apps/mobile/app/(app)/
   // [workspace]/(tabs)/inbox.tsx). `highlight` is the target comment id;
   // `h` is a per-tap nonce so re-tapping the same row re-fires the

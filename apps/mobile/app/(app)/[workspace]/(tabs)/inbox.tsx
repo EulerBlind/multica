@@ -1,10 +1,5 @@
 import { useMemo } from "react";
-import {
-  ActionSheetIOS,
-  Alert,
-  FlatList,
-  View,
-} from "react-native";
+import { Alert, FlatList, View } from "react-native";
 import { useQuery } from "@tanstack/react-query";
 import { router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
@@ -15,6 +10,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Header } from "@/components/ui/header";
 import { IconButton } from "@/components/ui/icon-button";
 import { HeaderActions } from "@/components/ui/app-header-actions";
+import { useActionSheet } from "@/components/ui/action-sheet";
 import { SwipeableInboxRow } from "@/components/inbox/swipeable-inbox-row";
 import { inboxListOptions } from "@/data/queries/inbox";
 import {
@@ -35,7 +31,7 @@ import {
 } from "@/lib/inbox-display";
 
 export default function Inbox() {
-  const { t } = useT("inbox");
+  const showActionSheet = useActionSheet();
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
   const { colorScheme } = useColorScheme();

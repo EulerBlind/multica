@@ -15,7 +15,9 @@
 import { View } from "react-native";
 import { useQuery } from "@tanstack/react-query";
 import { Text } from "@/components/ui/text";
+import { CommentAttachmentList } from "@/components/issue/comment-attachment-list";
 import { Markdown } from "@/lib/markdown";
+import { issueOwnedAttachments } from "@/lib/attachment-dedup";
 import { issueAttachmentsOptions } from "@/data/queries/issues";
 import { useWorkspaceStore } from "@/data/workspace-store";
 
@@ -30,19 +32,22 @@ export function IssueDescription({
   const { data: attachments } = useQuery(
     issueAttachmentsOptions(wsId, issueId),
   );
+  const persistedAttachments = issueOwnedAttachments(attachments, issueId);
+  const hasDescription = !!description?.trim();
 
-  if (!description || description.trim().length === 0) {
-    return (
-      <View className="px-4 pb-4">
+  return (
+    <View className="px-4 pb-4 gap-3">
+      {hasDescription ? (
+        <Markdown content={description ?? ""} attachments={attachments} />
+      ) : (
         <Text className="text-sm text-muted-foreground italic">
           No description.
         </Text>
-      </View>
-    );
-  }
-  return (
-    <View className="px-4 pb-4">
-      <Markdown content={description} attachments={attachments} />
+      )}
+      <CommentAttachmentList
+        attachments={persistedAttachments}
+        content={description ?? undefined}
+      />
     </View>
   );
 }
