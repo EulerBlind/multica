@@ -1,4 +1,4 @@
-.PHONY: help makehelp dev server daemon cli multica build test migrate-up migrate-down sqlc seed clean setup start stop check worktree-env setup-main start-main stop-main check-main setup-worktree start-worktree stop-worktree check-worktree remove-worktree db-up db-down db-drop db-reset selfhost selfhost-build selfhost-stop up down status list destroy gc env-exec api-dev web-dev desktop-dev
+.PHONY: help makehelp dev server daemon cli multica build test migrate-up migrate-down sqlc seed clean setup start stop check worktree-env setup-main start-main stop-main check-main setup-worktree start-worktree stop-worktree check-worktree remove-worktree db-up db-down db-drop db-reset selfhost selfhost-build selfhost-stop up down status list destroy gc env-exec api-dev web-dev desktop-dev mobile-android-private-apk update-rebase update-merge update mobile-clean mobile-doctor
 
 MAIN_ENV_FILE ?= .env
 WORKTREE_ENV_FILE ?= .env.worktree
@@ -362,6 +362,27 @@ migrate-down: ## Create the target DB if needed, then roll back database migrati
 
 sqlc: ## Regenerate sqlc code
 	cd server && go run github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1 generate
+
+# Mobile source sync and private Android build
+##@ Mobile private build
+
+mobile-doctor: ## Check controlled Android build inputs (PLATFORM=android)
+	node apps/mobile/scripts/mobile-doctor.mjs "$(PLATFORM)"
+
+mobile-android-private-apk: ## Build, verify, and atomically publish the private Android APK
+	node apps/mobile/scripts/build-private-android.mjs
+
+mobile-clean: ## Remove fixed Android generated and private build output paths
+	node apps/mobile/scripts/mobile-clean.mjs
+
+update: ## Fetch and fast-forward only (requires explicit GIT_REMOTE and GIT_BRANCH)
+	node scripts/sync-source.mjs ff-only
+
+update-merge: ## Fetch and explicitly merge divergence (requires GIT_REMOTE and GIT_BRANCH)
+	node scripts/sync-source.mjs merge
+
+update-rebase: ## Fetch and explicitly rebase divergence (requires GIT_REMOTE and GIT_BRANCH)
+	node scripts/sync-source.mjs rebase
 
 # Cleanup
 ##@ Cleanup

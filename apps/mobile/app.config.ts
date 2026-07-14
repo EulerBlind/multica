@@ -27,7 +27,7 @@ export default ({ config }: ConfigContext): ExpoConfig => {
   return {
     ...config,
     name: isPrivate
-      ? "Multica (Private)"
+      ? "multica"
       : isProd
         ? "Multica"
         : isStaging
@@ -75,6 +75,10 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     android: {
       package: androidPackage,
       permissions: ["android.permission.CAMERA"],
+      // Expo's generated base manifest includes this optional development
+      // permission. The private app does not draw over other applications, so
+      // keep a manifest-merger removal rule in every generated Android build.
+      blockedPermissions: ["android.permission.SYSTEM_ALERT_WINDOW"],
       icon: "./assets/icon-android-legacy.png",
       adaptiveIcon: {
         foregroundImage: "./assets/icon-android-foreground.png",

@@ -9,6 +9,7 @@ const finalApkName = "multica-private-android-0.1.0.apk";
 const provenanceName = "multica-private-android-0.1.0.provenance.json";
 const apiUrl = "https://direct.multica-be.elvisiky.com:3000";
 const webUrl = "https://direct.multica.elvisiky.com:3000";
+const displayName = "multica";
 
 function sha256(file) {
   return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
@@ -30,6 +31,40 @@ function removeFiles(files) {
     }
   }
   if (firstError) throw firstError;
+}
+
+export function validatePrivateAndroidEnvironment({ env = process.env, spawn = spawnSync } = {}) {
+  const packageId = env.EXPO_ANDROID_PACKAGE_PRIVATE;
+  const signingMode = env.MULTICA_ANDROID_SIGNING_MODE;
+  const sdkRoot = env.ANDROID_SDK_ROOT ?? env.ANDROID_HOME;
+
+  function capture(command, args) {
+    const result = spawn(command, args, { encoding: "utf8", env });
+    if (result.status !== 0) throw new Error(`${command} is unavailable`);
+    return `${result.stdout ?? ""}${result.stderr ?? ""}`;
+  }
+
+  const javaVersion = capture("java", ["-version"]);
+  const javaMajor = Number(javaVersion.match(/version "(?:1\.)?(\d+)/)?.[1]);
+  if (javaMajor !== 17) throw new Error(`JDK 17 is required; detected: ${javaVersion.trim()}`);
+  if (!sdkRoot) throw new Error("ANDROID_SDK_ROOT or ANDROID_HOME is required");
+  for (const requiredPath of [
+    path.join(sdkRoot, "platforms", "android-36"),
+    path.join(sdkRoot, "build-tools", "36.0.0"),
+    path.join(sdkRoot, "ndk", "27.1.12297006"),
+  ]) {
+    if (!fs.existsSync(requiredPath)) throw new Error(`Android SDK component is missing: ${requiredPath}`);
+  }
+  if (!packageId) {
+    throw new Error("EXPO_ANDROID_PACKAGE_PRIVATE must be owner-confirmed and set explicitly");
+  }
+  if (signingMode !== "sideload-debug") {
+    throw new Error(
+      "MULTICA_ANDROID_SIGNING_MODE=sideload-debug is required after the owner approves the test signing path; formal signing must use the owner-managed CI flow",
+    );
+  }
+
+  return { displayName, javaVersion, packageId, sdkRoot, signingMode };
 }
 
 export function runPrivateAndroidBuild({
@@ -64,9 +99,8 @@ export function runPrivateAndroidBuild({
   let published = false;
 
   try {
-    const packageId = env.EXPO_ANDROID_PACKAGE_PRIVATE;
-    const signingMode = env.MULTICA_ANDROID_SIGNING_MODE;
-    const sdkRoot = env.ANDROID_SDK_ROOT ?? env.ANDROID_HOME;
+    const environment = validatePrivateAndroidEnvironment({ env, spawn });
+    const { javaVersion, packageId, sdkRoot } = environment;
 
     function capture(command, args, options = {}) {
       const result = spawn(command, args, { encoding: "utf8", env, ...options });
@@ -74,28 +108,13 @@ export function runPrivateAndroidBuild({
       return `${result.stdout ?? ""}${result.stderr ?? ""}`;
     }
 
-    const javaVersion = capture("java", ["-version"]);
-    const major = Number(javaVersion.match(/version "(?:1\.)?(\d+)/)?.[1]);
-    if (major !== 17) throw new Error(`JDK 17 is required; detected: ${javaVersion.trim()}`);
-    if (!sdkRoot) throw new Error("ANDROID_SDK_ROOT or ANDROID_HOME is required");
-    for (const requiredPath of [
-      path.join(sdkRoot, "platforms", "android-36"),
-      path.join(sdkRoot, "build-tools", "36.0.0"),
-      path.join(sdkRoot, "ndk", "27.1.12297006"),
-    ]) {
-      if (!fs.existsSync(requiredPath)) throw new Error(`Android SDK component is missing: ${requiredPath}`);
-    }
-    if (!packageId) {
-      throw new Error("EXPO_ANDROID_PACKAGE_PRIVATE must be owner-confirmed and set explicitly");
-    }
-    if (signingMode !== "sideload-debug") {
-      throw new Error(
-        "MULTICA_ANDROID_SIGNING_MODE=sideload-debug is required after the owner approves the test signing path; formal signing must use the owner-managed CI flow",
-      );
-    }
-
     const gitCommit = capture("git", ["rev-parse", "HEAD"], { cwd: mobileDir }).trim();
     const gitDirty = capture("git", ["status", "--porcelain"], { cwd: mobileDir }).trim().length > 0;
+    if (gitDirty) {
+      throw new Error(
+        "Private Android build requires a clean git worktree; commit the reviewed source before rebuilding",
+      );
+    }
     const buildEnv = {
       ...env,
       APP_ENV: "private",
@@ -110,6 +129,7 @@ export function runPrivateAndroidBuild({
     console.log(`JDK: ${javaVersion.trim().split("\n")[0]}`);
     console.log(`Android SDK: ${sdkRoot} (platform/build-tools 36, NDK 27.1.12297006)`);
     console.log(`applicationId: ${packageId}`);
+    console.log(`displayName: ${displayName}`);
     console.log(`private API: ${apiUrl}`);
     console.log(`private Web: ${webUrl}`);
 
@@ -145,7 +165,7 @@ export function runPrivateAndroidBuild({
     fs.copyFileSync(sourceApk, stagedApk);
     const verifierOutput = run(
       "node",
-      [path.join(mobileDir, "scripts", "verify-private-android.mjs"), stagedApk, packageId],
+      [path.join(mobileDir, "scripts", "verify-private-android.mjs"), stagedApk, packageId, displayName],
       { captureOutput: true },
     );
 
@@ -154,8 +174,9 @@ export function runPrivateAndroidBuild({
       buildId,
       builtAt: now().toISOString(),
       gitCommit,
-      gitDirty,
+      gitDirty: false,
       applicationId: packageId,
+      displayName,
       certificateSha256: signerSha256(verifierOutput),
       apkSha256: sha256(stagedApk),
       apkFile: finalApkName,
@@ -176,6 +197,7 @@ export function runPrivateAndroidBuild({
       apkPath: finalApk,
       provenancePath: finalProvenance,
       applicationId: packageId,
+      displayName,
       certificateSha256: provenance.certificateSha256,
       apkSha256: provenance.apkSha256,
       gitCommit,

@@ -56,9 +56,14 @@ function fakeSpawn(fixture, failedStage, observed = {}) {
     if (command === "git") {
       return args[0] === "rev-parse"
         ? { status: 0, stdout: `${gitCommit}\n`, stderr: "" }
-        : { status: 0, stdout: " M apps/mobile/app.config.ts\n", stderr: "" };
+        : {
+            status: 0,
+            stdout: failedStage === "dirty" ? " M apps/mobile/app.config.ts\n" : "",
+            stderr: "",
+          };
     }
     if (command === "pnpm") {
+      observed.prebuildCalls = (observed.prebuildCalls ?? 0) + 1;
       return { status: failedStage === "prebuild" ? 2 : 0 };
     }
     if (path.basename(command).startsWith("gradlew")) {
@@ -69,6 +74,7 @@ function fakeSpawn(fixture, failedStage, observed = {}) {
     }
     if (command === "node") {
       observed.verifierApk = args[1];
+      observed.verifierDisplayName = args[3];
       return {
         status: failedStage === "verifier" ? 4 : 0,
         stdout: `Signer #1 certificate SHA-256 digest: ${certificateSha256}\n`,
@@ -86,15 +92,16 @@ afterEach(() => {
 });
 
 describe("private Android APK publication", () => {
-  for (const failedStage of ["java", "prebuild", "gradle", "verifier"]) {
+  for (const failedStage of ["java", "dirty", "prebuild", "gradle", "verifier"]) {
     it(`removes source, final, provenance, and temporary APKs when ${failedStage} fails`, () => {
       const fixture = createFixture();
+      const observed = {};
 
       expect(() =>
         runPrivateAndroidBuild({
           mobileDir: fixture.mobileDir,
           env: fixture.env,
-          spawn: fakeSpawn(fixture, failedStage),
+          spawn: fakeSpawn(fixture, failedStage, observed),
           uniqueId: () => "test-build",
         }),
       ).toThrow();
@@ -103,6 +110,7 @@ describe("private Android APK publication", () => {
       expect(fs.existsSync(fixture.finalApk)).toBe(false);
       expect(fs.existsSync(fixture.provenance)).toBe(false);
       expect(fs.readdirSync(path.dirname(fixture.finalApk))).toEqual([]);
+      if (failedStage === "dirty") expect(observed.prebuildCalls ?? 0).toBe(0);
     });
   }
 
@@ -125,6 +133,7 @@ describe("private Android APK publication", () => {
     expect(observed.gradleCwd).toBe(path.join(fixture.mobileDir, "android"));
     expect(observed.verifierApk).not.toBe(fixture.finalApk);
     expect(observed.verifierApk).toMatch(/\.tmp$/);
+    expect(observed.verifierDisplayName).toBe("multica");
 
     const provenance = JSON.parse(fs.readFileSync(fixture.provenance, "utf8"));
     expect(provenance).toMatchObject({
@@ -132,8 +141,9 @@ describe("private Android APK publication", () => {
       buildId: "test-build",
       builtAt: "2026-07-13T14:00:00.000Z",
       gitCommit,
-      gitDirty: true,
+      gitDirty: false,
       applicationId: fixture.env.EXPO_ANDROID_PACKAGE_PRIVATE,
+      displayName: "multica",
       certificateSha256,
       apkFile: path.basename(fixture.finalApk),
       verified: true,
