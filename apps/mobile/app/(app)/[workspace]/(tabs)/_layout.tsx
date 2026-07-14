@@ -22,7 +22,6 @@
  */
 import { useRef } from "react";
 import { Tabs } from "expo-router";
-import { Image } from "expo-image";
 import { View } from "react-native";
 import type { TriggerRef } from "@rn-primitives/dropdown-menu";
 import { useWorkspaceStore } from "@/data/workspace-store";
@@ -33,6 +32,7 @@ import {
   useChatUnreadMessageCount,
 } from "@/lib/unread-counts";
 import { MoreTabDropdownAnchor } from "@/components/nav/more-tab-dropdown";
+import { PlatformNavIcon } from "@/components/nav/platform-nav-icon";
 
 // Only override backgroundColor — @react-navigation/elements Badge internally
 // sets borderRadius = size/2, height = size, minWidth = size, so a single
@@ -81,11 +81,7 @@ export default function TabsLayout() {
             tabBarBadge: inboxBadge,
             tabBarBadgeStyle: BADGE_STYLE,
             tabBarIcon: ({ color, size, focused }) => (
-              <Image
-                source={focused ? "sf:tray.fill" : "sf:tray"}
-                tintColor={color}
-                style={{ width: size, height: size }}
-              />
+              <PlatformNavIcon name="inbox" color={color} size={size} focused={focused} />
             ),
           }}
         />
@@ -94,11 +90,7 @@ export default function TabsLayout() {
           options={{
             title: "My Issues",
             tabBarIcon: ({ color, size, focused }) => (
-              <Image
-                source={focused ? "sf:checklist" : "sf:checklist.unchecked"}
-                tintColor={color}
-                style={{ width: size, height: size }}
-              />
+              <PlatformNavIcon name="myIssues" color={color} size={size} focused={focused} />
             ),
           }}
         />
@@ -109,11 +101,7 @@ export default function TabsLayout() {
             tabBarBadge: chatBadge,
             tabBarBadgeStyle: BADGE_STYLE,
             tabBarIcon: ({ color, size, focused }) => (
-              <Image
-                source={focused ? "sf:bubble.left.fill" : "sf:bubble.left"}
-                tintColor={color}
-                style={{ width: size, height: size }}
-              />
+              <PlatformNavIcon name="chat" color={color} size={size} focused={focused} />
             ),
           }}
         />
@@ -121,12 +109,8 @@ export default function TabsLayout() {
           name="more"
           options={{
             title: "More",
-            tabBarIcon: ({ color, size }) => (
-              <Image
-                source="sf:ellipsis"
-                tintColor={color}
-                style={{ width: size, height: size }}
-              />
+            tabBarIcon: ({ color, size, focused }) => (
+              <PlatformNavIcon name="more" color={color} size={size} focused={focused} />
             ),
           }}
           listeners={() => ({

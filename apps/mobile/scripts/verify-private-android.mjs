@@ -3,9 +3,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 
-const [apkArg, expectedPackage = "ai.multica.mobile.privateapp"] = process.argv.slice(2);
+import { assertPrivateAndroidPermissions } from "./private-android-permissions.mjs";
+
+const [apkArg, expectedPackage = "ai.multica.mobile.privateapp", expectedDisplayName = "multica"] = process.argv.slice(2);
 if (!apkArg) {
-  throw new Error("Usage: node verify-private-android.mjs <apk> [applicationId]");
+  throw new Error("Usage: node verify-private-android.mjs <apk> [applicationId] [displayName]");
 }
 
 const apk = path.resolve(apkArg);
@@ -39,10 +41,12 @@ requireMatch(
   new RegExp(`package: name='${expectedPackage.replaceAll(".", "\\.")}'`),
   `applicationId is not ${expectedPackage}`,
 );
-requireMatch(badging, /uses-permission: name='android\.permission\.CAMERA'/, "CAMERA permission is missing");
-if (/android\.permission\.RECORD_AUDIO/.test(badging)) {
-  throw new Error("RECORD_AUDIO must not be present");
-}
+requireMatch(
+  badging,
+  new RegExp(`^application-label:'${expectedDisplayName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}'$`, "m"),
+  `application label is not ${expectedDisplayName}`,
+);
+const permissions = assertPrivateAndroidPermissions(badging);
 
 const resources = output(aapt2, ["dump", "resources", apk]);
 const launcherResource =
@@ -72,7 +76,9 @@ const sha256 = crypto.createHash("sha256").update(fs.readFileSync(apk)).digest("
 
 console.log(`APK: ${apk}`);
 console.log(`applicationId: ${expectedPackage}`);
-console.log("permissions: CAMERA=yes, RECORD_AUDIO=no");
+console.log(`displayName: ${expectedDisplayName}`);
+console.log(`permissions (${permissions.length}): ${permissions.join(", ")}`);
+console.log("permission assertions: CAMERA=yes, RECORD_AUDIO=no, SYSTEM_ALERT_WINDOW=no");
 console.log("adaptiveIcon: yes; monochromeIcon: yes");
 console.log(`private URLs: ${requiredUrls.join(", ")}`);
 console.log(signature.trim());

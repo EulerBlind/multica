@@ -15,10 +15,13 @@ function configFor(env: string) {
 describe("mobile app variants", () => {
   it("isolates the private package, name, and scheme", () => {
     const privateConfig = configFor("private");
-    expect(privateConfig.name).toBe("Multica (Private)");
+    expect(privateConfig.name).toBe("multica");
     expect(privateConfig.scheme).toBe("multica-private");
     expect(privateConfig.android?.package).toBe("ai.multica.mobile.privateapp");
     expect(privateConfig.android?.permissions).toContain("android.permission.CAMERA");
+    expect(privateConfig.android?.blockedPermissions).toContain(
+      "android.permission.SYSTEM_ALERT_WINDOW",
+    );
 
     for (const env of ["development", "staging", "production"]) {
       const config = configFor(env);

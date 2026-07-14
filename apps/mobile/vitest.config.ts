@@ -22,7 +22,12 @@ export default defineConfig({
   test: {
     environment: "node",
     globals: true,
-    include: ["lib/**/*.test.ts", "data/**/*.test.ts", "scripts/**/*.test.mjs"],
+    include: [
+      "lib/**/*.test.ts",
+      "data/**/*.test.ts",
+      "components/nav/**/*.test.ts",
+      "scripts/**/*.test.mjs",
+    ],
     passWithNoTests: true,
   },
 });
