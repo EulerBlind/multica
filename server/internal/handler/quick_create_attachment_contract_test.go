@@ -138,6 +138,44 @@ func TestQuickCreateAttachmentReservationEndToEnd(t *testing.T) {
 	attachmentB := createAttachmentContractDraft(t, testUserID, nil)
 	unreserved := createAttachmentContractDraft(t, testUserID, nil)
 
+	t.Run("missing transaction starter fails closed", func(t *testing.T) {
+		draft := createAttachmentContractDraft(t, testUserID, nil)
+		var before int
+		if err := testPool.QueryRow(context.Background(), `
+			SELECT count(*) FROM agent_task_queue
+			WHERE agent_id = $1 AND context->>'type' = 'quick_create'
+		`, agentID).Scan(&before); err != nil {
+			t.Fatalf("count tasks before missing transaction starter: %v", err)
+		}
+
+		originalTxStarter := testHandler.TaskService.TxStarter
+		testHandler.TaskService.TxStarter = nil
+		defer func() { testHandler.TaskService.TxStarter = originalTxStarter }()
+
+		w := httptest.NewRecorder()
+		req := newRequest(http.MethodPost, "/api/issues/quick-create", map[string]any{
+			"agent_id":       agentID,
+			"prompt":         "must fail without a transaction starter",
+			"attachment_ids": []string{draft},
+		})
+		testHandler.QuickCreateIssue(w, req)
+		if w.Code != http.StatusInternalServerError {
+			t.Fatalf("missing transaction starter: got %d: %s", w.Code, w.Body.String())
+		}
+
+		var after int
+		if err := testPool.QueryRow(context.Background(), `
+			SELECT count(*) FROM agent_task_queue
+			WHERE agent_id = $1 AND context->>'type' = 'quick_create'
+		`, agentID).Scan(&after); err != nil {
+			t.Fatalf("count tasks after missing transaction starter: %v", err)
+		}
+		if after != before {
+			t.Fatalf("missing transaction starter leaked a task: before=%d after=%d", before, after)
+		}
+		assertQuickCreateReservation(t, draft, "")
+	})
+
 	t.Run("enqueue rejects a foreign draft atomically", func(t *testing.T) {
 		foreignMember := createAttachmentContractMember(t)
 		foreignDraft := createAttachmentContractDraft(t, foreignMember, nil)
