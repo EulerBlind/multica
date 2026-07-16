@@ -34,10 +34,20 @@ export function privateAndroidBuildEnv({ env = process.env, home } = {}) {
   const paths = resolvePrivateBuildPaths({ env, home });
   // The no-argument local build reuses the tracked mainline development id.
   // A private release id remains an explicit owner-controlled override.
-  const applicationId =
-    env.EXPO_ANDROID_PACKAGE_PRIVATE?.trim() || defaultAndroidApplicationId;
-  const signingMode =
-    env.MULTICA_ANDROID_SIGNING_MODE?.trim() || defaultAndroidSigningMode;
+  const hasApplicationId = Object.hasOwn(env, "EXPO_ANDROID_PACKAGE_PRIVATE");
+  const hasSigningMode = Object.hasOwn(env, "MULTICA_ANDROID_SIGNING_MODE");
+  const useLocalDefaults = !hasApplicationId && !hasSigningMode;
+  const applicationId = useLocalDefaults
+    ? defaultAndroidApplicationId
+    : env.EXPO_ANDROID_PACKAGE_PRIVATE?.trim();
+  const signingMode = useLocalDefaults
+    ? defaultAndroidSigningMode
+    : env.MULTICA_ANDROID_SIGNING_MODE?.trim();
+  if (!applicationId || !signingMode) {
+    throw new Error(
+      "EXPO_ANDROID_PACKAGE_PRIVATE and MULTICA_ANDROID_SIGNING_MODE must both be non-blank when either is provided",
+    );
+  }
   const pathValue = [
     path.join(paths.javaHome, "bin"),
     path.join(paths.androidSdkRoot, "platform-tools"),
