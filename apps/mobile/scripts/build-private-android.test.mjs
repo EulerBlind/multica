@@ -8,6 +8,9 @@ import { runPrivateAndroidBuild } from "./build-private-android.mjs";
 const fixtureDirs = [];
 const certificateSha256 = "a".repeat(64);
 const gitCommit = "b".repeat(40);
+const gitVersion = "0.4.1-57-gbbbbbbbbb";
+const releaseVersion = "0.4.1";
+const nativeBuildNumber = 4157;
 
 function createFixture() {
   const mobileDir = fs.mkdtempSync(path.join(os.tmpdir(), "qia319-private-android-"));
@@ -23,15 +26,17 @@ function createFixture() {
   }
 
   const sourceApk = path.join(mobileDir, "android", "app", "build", "outputs", "apk", "release", "app-release.apk");
-  const finalApk = path.join(mobileDir, "dist", "multica-private-android-0.1.0.apk");
-  const provenance = path.join(mobileDir, "dist", "multica-private-android-0.1.0.provenance.json");
+  const finalApk = path.join(mobileDir, "dist", `multica-private-android-${gitVersion}.apk`);
+  const provenance = path.join(mobileDir, "dist", `multica-private-android-${gitVersion}.provenance.json`);
   const staleTmp = path.join(mobileDir, "dist", ".multica-private-android-0.1.0.apk.previous.tmp");
+  const staleOldApk = path.join(mobileDir, "dist", "multica-private-android-0.1.0.apk");
   fs.mkdirSync(path.dirname(sourceApk), { recursive: true });
   fs.mkdirSync(path.dirname(finalApk), { recursive: true });
   fs.writeFileSync(sourceApk, "stale-source");
   fs.writeFileSync(finalApk, "stale-final");
   fs.writeFileSync(provenance, "stale-provenance");
   fs.writeFileSync(staleTmp, "stale-tmp");
+  fs.writeFileSync(staleOldApk, "stale-old-apk");
 
   return {
     mobileDir,
@@ -54,13 +59,20 @@ function fakeSpawn(fixture, failedStage, observed = {}) {
         : { status: 0, stdout: "", stderr: 'openjdk version "17.0.12"' };
     }
     if (command === "git") {
-      return args[0] === "rev-parse"
-        ? { status: 0, stdout: `${gitCommit}\n`, stderr: "" }
-        : {
-            status: 0,
-            stdout: failedStage === "dirty" ? " M apps/mobile/app.config.ts\n" : "",
-            stderr: "",
-          };
+      if (args[0] === "rev-parse") return { status: 0, stdout: `${gitCommit}\n`, stderr: "" };
+      if (args[0] === "status") {
+        return {
+          status: 0,
+          stdout: failedStage === "dirty" ? " M apps/mobile/app.config.ts\n" : "",
+          stderr: "",
+        };
+      }
+      if (args[0] === "describe") {
+        return { status: 0, stdout: `v${gitVersion}\n`, stderr: "" };
+      }
+      if (args[0] === "rev-list") {
+        return { status: 0, stdout: `${nativeBuildNumber}\n`, stderr: "" };
+      }
     }
     if (command === "pnpm") {
       observed.prebuildCalls = (observed.prebuildCalls ?? 0) + 1;
@@ -142,6 +154,9 @@ describe("private Android APK publication", () => {
       builtAt: "2026-07-13T14:00:00.000Z",
       gitCommit,
       gitDirty: false,
+      gitVersion,
+      releaseVersion,
+      nativeBuildNumber,
       applicationId: fixture.env.EXPO_ANDROID_PACKAGE_PRIVATE,
       displayName: "multica",
       certificateSha256,
