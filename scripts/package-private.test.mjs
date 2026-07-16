@@ -134,6 +134,45 @@ test("the no-argument Android entry reaches the verified builder with safe defau
   assert.equal(options.env.MULTICA_ANDROID_SIGNING_MODE, "sideload-debug");
 });
 
+test("rejects a package-only Android identity before spawning the builder", () => {
+  const recorder = recordingSpawn();
+
+  assert.throws(
+    () =>
+      packagePrivateAndroid({
+        env: {
+          PATH: "/usr/bin",
+          EXPO_ANDROID_PACKAGE_PRIVATE: "owner.confirmed.package",
+        },
+        home: "/home/tester",
+        exists: () => true,
+        spawn: recorder.spawn,
+      }),
+    /EXPO_ANDROID_PACKAGE_PRIVATE and MULTICA_ANDROID_SIGNING_MODE must both be non-blank/,
+  );
+  assert.equal(recorder.calls.length, 0);
+});
+
+test("rejects blank Android signing paired with an explicit package before spawning", () => {
+  const recorder = recordingSpawn();
+
+  assert.throws(
+    () =>
+      packagePrivateAndroid({
+        env: {
+          PATH: "/usr/bin",
+          EXPO_ANDROID_PACKAGE_PRIVATE: "owner.confirmed.package",
+          MULTICA_ANDROID_SIGNING_MODE: "   ",
+        },
+        home: "/home/tester",
+        exists: () => true,
+        spawn: recorder.spawn,
+      }),
+    /EXPO_ANDROID_PACKAGE_PRIVATE and MULTICA_ANDROID_SIGNING_MODE must both be non-blank/,
+  );
+  assert.equal(recorder.calls.length, 0);
+});
+
 test("fails before spawning when a fixed Android dependency directory is missing", () => {
   const recorder = recordingSpawn();
   assert.throws(
