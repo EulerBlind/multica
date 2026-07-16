@@ -5,8 +5,6 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const defaultMobileDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const finalApkName = "multica-private-android-0.1.0.apk";
-const provenanceName = "multica-private-android-0.1.0.provenance.json";
 const apiUrl = "https://direct.multica-be.elvisiky.com:3000";
 const webUrl = "https://direct.multica.elvisiky.com:3000";
 const displayName = "multica";
@@ -31,6 +29,28 @@ function removeFiles(files) {
     }
   }
   if (firstError) throw firstError;
+}
+
+function removePrivateAndroidDistArtifacts(distDir) {
+  if (!fs.existsSync(distDir)) return;
+  const artifacts = fs
+    .readdirSync(distDir)
+    .filter(
+      (name) =>
+        /^multica-private-android-.+\.(?:apk|provenance\.json)$/.test(name) ||
+        /^\.multica-private-android-.+\.tmp$/.test(name),
+    )
+    .map((name) => path.join(distDir, name));
+  removeFiles(artifacts);
+}
+
+export function parseMobileGitVersion(raw) {
+  const gitVersion = raw.trim().replace(/^v/, "");
+  const match = gitVersion.match(/^(\d+\.\d+\.\d+)(?:-\d+-g[0-9a-f]+)?$/i);
+  if (!match) {
+    throw new Error(`git describe did not produce a tagged Multica version: ${raw.trim()}`);
+  }
+  return { gitVersion, releaseVersion: match[1] };
 }
 
 export function validatePrivateAndroidEnvironment({ env = process.env, spawn = spawnSync } = {}) {
@@ -77,25 +97,15 @@ export function runPrivateAndroidBuild({
 } = {}) {
   const sourceApk = path.join(mobileDir, "android", "app", "build", "outputs", "apk", "release", "app-release.apk");
   const distDir = path.join(mobileDir, "dist");
-  const finalApk = path.join(distDir, finalApkName);
-  const finalProvenance = path.join(distDir, provenanceName);
 
   // No preflight failure may leave a source, final, provenance, or stale staged artifact.
-  removeFiles([sourceApk, finalApk, finalProvenance]);
-  if (fs.existsSync(distDir)) {
-    const staleStagedArtifacts = fs
-      .readdirSync(distDir)
-      .filter(
-        (name) =>
-          name.endsWith(".tmp") &&
-          (name.startsWith(`.${finalApkName}.`) || name.startsWith(`.${provenanceName}.`)),
-      )
-      .map((name) => path.join(distDir, name));
-    removeFiles(staleStagedArtifacts);
-  }
+  removeFiles([sourceApk]);
+  removePrivateAndroidDistArtifacts(distDir);
 
   let stagedApk;
   let stagedProvenance;
+  let finalApk;
+  let finalProvenance;
   let published = false;
 
   try {
@@ -115,12 +125,32 @@ export function runPrivateAndroidBuild({
         "Private Android build requires a clean git worktree; commit the reviewed source before rebuilding",
       );
     }
+    const { gitVersion, releaseVersion } = parseMobileGitVersion(
+      capture(
+        "git",
+        ["describe", "--tags", "--match", "v[0-9]*", "--always"],
+        { cwd: mobileDir },
+      ),
+    );
+    const nativeBuildNumber = Number(
+      capture("git", ["rev-list", "--count", "HEAD"], { cwd: mobileDir }).trim(),
+    );
+    if (!Number.isSafeInteger(nativeBuildNumber) || nativeBuildNumber < 1) {
+      throw new Error(`git rev-list returned an invalid mobile build number: ${nativeBuildNumber}`);
+    }
+    const finalApkName = `multica-private-android-${gitVersion}.apk`;
+    const provenanceName = `multica-private-android-${gitVersion}.provenance.json`;
+    finalApk = path.join(distDir, finalApkName);
+    finalProvenance = path.join(distDir, provenanceName);
     const buildEnv = {
       ...env,
       APP_ENV: "private",
       EXPO_PUBLIC_API_URL: apiUrl,
       EXPO_PUBLIC_WEB_URL: webUrl,
       EXPO_ANDROID_PACKAGE_PRIVATE: packageId,
+      MULTICA_MOBILE_VERSION: releaseVersion,
+      MULTICA_MOBILE_BUILD_NUMBER: String(nativeBuildNumber),
+      EXPO_PUBLIC_MULTICA_MOBILE_VERSION: gitVersion,
       ANDROID_SDK_ROOT: sdkRoot,
       ANDROID_HOME: sdkRoot,
       EXPO_NO_TELEMETRY: "1",
@@ -130,6 +160,7 @@ export function runPrivateAndroidBuild({
     console.log(`Android SDK: ${sdkRoot} (platform/build-tools 36, NDK 27.1.12297006)`);
     console.log(`applicationId: ${packageId}`);
     console.log(`displayName: ${displayName}`);
+    console.log(`mobile version: ${releaseVersion} (${nativeBuildNumber}; ${gitVersion})`);
     console.log(`private API: ${apiUrl}`);
     console.log(`private Web: ${webUrl}`);
 
@@ -175,6 +206,9 @@ export function runPrivateAndroidBuild({
       builtAt: now().toISOString(),
       gitCommit,
       gitDirty: false,
+      gitVersion,
+      releaseVersion,
+      nativeBuildNumber,
       applicationId: packageId,
       displayName,
       certificateSha256: signerSha256(verifierOutput),
@@ -201,6 +235,9 @@ export function runPrivateAndroidBuild({
       certificateSha256: provenance.certificateSha256,
       apkSha256: provenance.apkSha256,
       gitCommit,
+      gitVersion,
+      releaseVersion,
+      nativeBuildNumber,
     };
     console.log(`Private Android APK: ${finalApk}`);
     console.log(`Provenance: ${finalProvenance}`);
@@ -210,7 +247,8 @@ export function runPrivateAndroidBuild({
       sourceApk,
       ...(stagedApk ? [stagedApk] : []),
       ...(stagedProvenance ? [stagedProvenance] : []),
-      ...(!published ? [finalApk, finalProvenance] : []),
+      ...(!published && finalApk ? [finalApk] : []),
+      ...(!published && finalProvenance ? [finalProvenance] : []),
     ]);
   }
 }
