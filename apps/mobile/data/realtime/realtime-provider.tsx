@@ -44,6 +44,7 @@ import { WSClient } from "./ws-client";
 import { normalizeClientOS } from "@/lib/client-os";
 
 const API_URL = process.env.EXPO_PUBLIC_API_URL;
+const CLIENT_VERSION = process.env.EXPO_PUBLIC_MULTICA_MOBILE_VERSION ?? "0.1.0";
 
 if (!API_URL) {
   // ApiClient already throws on this; keeping a defensive check here
@@ -96,7 +97,7 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
         // reconnecting with a credential on its way to expiring.
         getToken: () => api.getToken(),
         workspaceSlug: wsSlug,
-        clientVersion: "0.1.0",
+        clientVersion: CLIENT_VERSION,
         clientOS: normalizeClientOS(Platform.OS),
         logger: console,
       });
