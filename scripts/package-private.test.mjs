@@ -46,7 +46,7 @@ test("resolves Android dependencies outside task workspaces by default", () => {
   });
 });
 
-test("prepends fixed Java and adb paths without changing release identity inputs", () => {
+test("prepends fixed Java and adb paths while preserving explicit Android identity inputs", () => {
   const input = {
     PATH: "/usr/bin",
     EXPO_ANDROID_PACKAGE_PRIVATE: "owner.confirmed.package",
@@ -82,6 +82,16 @@ test("prepends fixed Java and adb paths without changing release identity inputs
   );
 });
 
+test("uses the mainline development identity for a no-argument Android build", () => {
+  const result = privateAndroidBuildEnv({
+    env: { PATH: "/usr/bin" },
+    home: "/home/tester",
+  });
+
+  assert.equal(result.env.EXPO_ANDROID_PACKAGE_PRIVATE, "ai.multica.mobile.dev");
+  assert.equal(result.env.MULTICA_ANDROID_SIGNING_MODE, "sideload-debug");
+});
+
 test("runs the existing verified Android builder with fixed dependency paths", () => {
   const recorder = recordingSpawn();
   const env = {
@@ -105,6 +115,23 @@ test("runs the existing verified Android builder with fixed dependency paths", (
   assert.equal(options.cwd, "/repo");
   assert.equal(options.env.JAVA_HOME, "/home/tester/.multica-build/jdk17");
   assert.equal(options.env.EXPO_ANDROID_PACKAGE_PRIVATE, "owner.confirmed.package");
+});
+
+test("the no-argument Android entry reaches the verified builder with safe defaults", () => {
+  const recorder = recordingSpawn();
+
+  packagePrivateAndroid({
+    env: { PATH: "/usr/bin" },
+    home: "/home/tester",
+    exists: () => true,
+    spawn: recorder.spawn,
+    root: "/repo",
+  });
+
+  assert.equal(recorder.calls.length, 1);
+  const [, , options] = recorder.calls[0];
+  assert.equal(options.env.EXPO_ANDROID_PACKAGE_PRIVATE, "ai.multica.mobile.dev");
+  assert.equal(options.env.MULTICA_ANDROID_SIGNING_MODE, "sideload-debug");
 });
 
 test("fails before spawning when a fixed Android dependency directory is missing", () => {
