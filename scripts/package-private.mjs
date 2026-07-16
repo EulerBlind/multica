@@ -17,6 +17,8 @@ export {
 };
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const defaultAndroidApplicationId = "ai.multica.mobile.dev";
+const defaultAndroidSigningMode = "sideload-debug";
 
 export function resolvePrivateBuildPaths({ env = process.env, home = os.homedir() } = {}) {
   const buildRoot = path.resolve(env.MULTICA_BUILD_ROOT ?? path.join(home, ".multica-build"));
@@ -30,6 +32,12 @@ export function resolvePrivateBuildPaths({ env = process.env, home = os.homedir(
 
 export function privateAndroidBuildEnv({ env = process.env, home } = {}) {
   const paths = resolvePrivateBuildPaths({ env, home });
+  // The no-argument local build reuses the tracked mainline development id.
+  // A private release id remains an explicit owner-controlled override.
+  const applicationId =
+    env.EXPO_ANDROID_PACKAGE_PRIVATE?.trim() || defaultAndroidApplicationId;
+  const signingMode =
+    env.MULTICA_ANDROID_SIGNING_MODE?.trim() || defaultAndroidSigningMode;
   const pathValue = [
     path.join(paths.javaHome, "bin"),
     path.join(paths.androidSdkRoot, "platform-tools"),
@@ -46,6 +54,8 @@ export function privateAndroidBuildEnv({ env = process.env, home } = {}) {
       ANDROID_SDK_ROOT: paths.androidSdkRoot,
       ANDROID_HOME: paths.androidSdkRoot,
       GRADLE_USER_HOME: paths.gradleUserHome,
+      EXPO_ANDROID_PACKAGE_PRIVATE: applicationId,
+      MULTICA_ANDROID_SIGNING_MODE: signingMode,
       PATH: pathValue,
     },
   };

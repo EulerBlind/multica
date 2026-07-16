@@ -317,14 +317,21 @@ migrate-down: ## Create the target DB if needed, then roll back database migrati
 sqlc: ## Regenerate sqlc code
 	cd server && go run github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1 generate
 
-# Mobile source sync and private Android build
-##@ Mobile private build
+# Private application packaging
+##@ Private packaging
+
+package-android: ## Package the private Android APK with fixed tools under ~/.multica-build
+	node scripts/package-private.mjs android
+
+package-macos: ## Package the signed and notarized private macOS release (controlled macOS host)
+	node scripts/package-private.mjs macos
+
+# Backward-compatible diagnostics and aliases.
 
 mobile-doctor: ## Check controlled Android build inputs (PLATFORM=android)
 	node apps/mobile/scripts/mobile-doctor.mjs "$(PLATFORM)"
 
-mobile-android-private-apk: ## Build, verify, and atomically publish the private Android APK
-	node apps/mobile/scripts/build-private-android.mjs
+mobile-android-private-apk: package-android ## Alias for package-android
 
 mobile-clean: ## Remove fixed Android generated and private build output paths
 	node apps/mobile/scripts/mobile-clean.mjs
