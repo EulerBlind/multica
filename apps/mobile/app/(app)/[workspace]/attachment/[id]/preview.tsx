@@ -26,7 +26,7 @@ import {
   getAttachmentPreviewKind,
   htmlToStaticText,
 } from "@/lib/attachment-preview";
-import { resolveAttachmentUrl } from "@/lib/attachment-url";
+import { resolveAttachmentDownloadUrl } from "@/lib/attachment-url";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { THEME } from "@/lib/theme";
 
@@ -46,7 +46,7 @@ export default function AttachmentPreviewRoute() {
     attachmentContentOptions(workspaceId, id, isTextBacked),
   );
 
-  const downloadUrl = resolveAttachmentUrl(
+  const downloadUrl = resolveAttachmentDownloadUrl(
     attachment?.download_url ||
       attachment?.markdown_url ||
       attachment?.url ||

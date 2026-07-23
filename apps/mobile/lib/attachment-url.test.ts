@@ -7,14 +7,17 @@
  *
  * Coverage target: every branch the call sites in the app rely on —
  *   - `comment-attachment-list.tsx`         → file chip Linking.openURL
+ *     (download resolver, app_url base)
  *   - `markdown-image.tsx`                  → mc:// + RN image loader
+ *     (image resolver, API base)
  *   - `composer-attachment-row.tsx`         → completed non-image chip
- *                                             tap → Linking.openURL
+ *     tap → Linking.openURL (download resolver, app_url base)
  */
 import { describe, expect, it } from "vitest";
 import {
   resolveAttachmentUrl,
   resolveAttachmentUrlWithBase,
+  resolveAttachmentDownloadUrl,
 } from "./attachment-url";
 
 describe("resolveAttachmentUrlWithBase", () => {
@@ -121,5 +124,24 @@ describe("resolveAttachmentUrl (env-bound)", () => {
     expect(resolveAttachmentUrl(undefined)).toBeNull();
     expect(resolveAttachmentUrl(null)).toBeNull();
     expect(resolveAttachmentUrl("")).toBeNull();
+  });
+});
+
+describe("resolveAttachmentDownloadUrl (env-bound, app_url base)", () => {
+  // Browser-opened attachment URLs must resolve against the frontend
+  // `EXPO_PUBLIC_WEB_URL` (app_url), not the API `server_url` — see the
+  // private mobile build contract. The base-prepending path is shared
+  // with `resolveAttachmentUrlWithBase` (covered above); here we pin the
+  // env-bound contract: absolute URLs pass through and nullish input is
+  // a no-op, mirroring `resolveAttachmentUrl (env-bound)`.
+  it("passes an absolute URL through unchanged (signed CDN / markdown_url)", () => {
+    const absolute = "https://cdn.example.test/file.pdf?Signature=s";
+    expect(resolveAttachmentDownloadUrl(absolute)).toBe(absolute);
+  });
+
+  it("returns null for empty input", () => {
+    expect(resolveAttachmentDownloadUrl(undefined)).toBeNull();
+    expect(resolveAttachmentDownloadUrl(null)).toBeNull();
+    expect(resolveAttachmentDownloadUrl("")).toBeNull();
   });
 });
