@@ -29,7 +29,7 @@ import { Ionicons } from "@expo/vector-icons";
 import type { Attachment } from "@multica/core/types";
 import { standaloneAttachments } from "@/lib/attachment-dedup";
 import { MarkdownImage } from "@/lib/markdown/markdown-image";
-import { resolveAttachmentUrl } from "@/lib/attachment-url";
+import { resolveAttachmentDownloadUrl } from "@/lib/attachment-url";
 import { getAttachmentOpenMode } from "@/lib/attachment-preview";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { useColorScheme } from "@/lib/use-color-scheme";
@@ -116,7 +116,7 @@ function FileCard({
     // Media preview and unsupported-file download both hand the fresh
     // canonical URL to the OS. Unknown types intentionally retain the old
     // download behavior instead of navigating to a broken preview screen.
-    const target = resolveAttachmentUrl(attachment.download_url);
+    const target = resolveAttachmentDownloadUrl(attachment.download_url);
     if (target) void Linking.openURL(target).catch(() => undefined);
   };
 

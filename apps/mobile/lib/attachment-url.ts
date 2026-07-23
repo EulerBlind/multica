@@ -26,6 +26,16 @@
  */
 
 const API_URL = process.env.EXPO_PUBLIC_API_URL ?? "";
+// User-facing page/download URLs (anything handed to `Linking.openURL` and
+// opened in the system browser) resolve against the frontend `app_url`
+// (`EXPO_PUBLIC_WEB_URL`), NOT the API `server_url`. The web app reverse-
+// proxies `/api/*` to the backend (apps/web/next.config.ts `rewrites`), so
+// a frontend-anchored attachment URL reaches the same download endpoint
+// without exposing the private backend host to end users. API calls
+// (data/api.ts) and native `<Image>` loads keep using `API_URL` directly.
+// Falls back to `API_URL` when no web URL is configured (e.g. a dev build
+// with only `EXPO_PUBLIC_API_URL` set) so downloads still work.
+const DOWNLOAD_BASE_URL = process.env.EXPO_PUBLIC_WEB_URL || API_URL;
 
 export function resolveAttachmentUrlWithBase(
   rawUrl: string | null | undefined,
@@ -41,4 +51,21 @@ export function resolveAttachmentUrl(
   rawUrl: string | null | undefined,
 ): string | null {
   return resolveAttachmentUrlWithBase(rawUrl, API_URL);
+}
+
+/**
+ * Resolve an attachment URL that will be opened as a page/download in the
+ * system browser (`Linking.openURL`) against the frontend `app_url`.
+ *
+ * Distinct from `resolveAttachmentUrl` (which targets the API base for
+ * native `<Image>` / avatar loads): browser-opened URLs must use the
+ * user-facing frontend host so the backend `server_url` is never exposed
+ * to the end user. See the private mobile build contract in
+ * `scripts/build-private-android.mjs` (`EXPO_PUBLIC_WEB_URL` vs
+ * `EXPO_PUBLIC_API_URL`).
+ */
+export function resolveAttachmentDownloadUrl(
+  rawUrl: string | null | undefined,
+): string | null {
+  return resolveAttachmentUrlWithBase(rawUrl, DOWNLOAD_BASE_URL);
 }
