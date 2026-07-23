@@ -47,7 +47,7 @@ import {
   findAttachmentForUrl,
   getAttachmentOpenMode,
 } from "@/lib/attachment-preview";
-import { resolveAttachmentUrl } from "@/lib/attachment-url";
+import { resolveAttachmentDownloadUrl } from "@/lib/attachment-url";
 import { preprocessMobileMarkdown } from "./preprocess";
 import { useMarkdownStyle } from "./markdown-style";
 import { splitMarkdown } from "./split-markdown";
@@ -188,7 +188,7 @@ export function Markdown({
           return;
         }
 
-        const target = resolveAttachmentUrl(
+        const target = resolveAttachmentDownloadUrl(
           attachment.download_url ||
             attachment.markdown_url ||
             attachment.url ||

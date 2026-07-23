@@ -27,6 +27,10 @@ export const PLATFORM_NAV_ICON_MAP = {
     ios: { unfocused: "square.stack", focused: "square.stack.fill" },
     android: { unfocused: "folder-outline", focused: "folder" },
   },
+  autopilots: {
+    ios: { unfocused: "clock", focused: "clock.fill" },
+    android: { unfocused: "time-outline", focused: "time" },
+  },
   chevron: {
     ios: { unfocused: "chevron.right", focused: "chevron.right" },
     android: { unfocused: "chevron-forward", focused: "chevron-forward" },
