@@ -257,6 +257,9 @@ Daemon behavior is configured via flags or environment variables:
 | Codex handshake timeout | `--codex-handshake-timeout` | `MULTICA_CODEX_HANDSHAKE_TIMEOUT` | `30s`; `thread/start` and `thread/resume`: `60s` (an explicit value overrides both budgets globally) |
 | Codex turn-interrupt timeout | — | `MULTICA_CODEX_TURN_INTERRUPT_TIMEOUT` | `2s` (bounded grace period for `turn/interrupt` acknowledgement and `turn/completed`; tune from the logged interrupt latency on unusually slow hosts) |
 | OpenCode idle watchdog | — | `MULTICA_OPENCODE_IDLE_WATCHDOG` | `10m` (`0` falls back to the generic idle watchdog; cannot extend it) |
+| Cursor idle watchdog | — | `MULTICA_CURSOR_IDLE_WATCHDOG` | `2h` (`0` falls back to the generic idle watchdog; unlike OpenCode, this value **replaces** the global bound so a cursor run emitting only `step_finish`/`tool_call progress` between assistant messages is not force-stopped mid-run) |
+| Generic idle watchdog | — | `MULTICA_AGENT_IDLE_WATCHDOG` | `30m` (`0` disables the entire idle-watchdog suite for all providers, including cursor; this is the authoritative kill switch) |
+| In-flight tool watchdog | — | `MULTICA_AGENT_TOOL_WATCHDOG` | `2h` (`0` disables the backstop for a tool_use that never produces a matching tool_result) |
 | Max concurrent tasks | `--max-concurrent-tasks` | `MULTICA_DAEMON_MAX_CONCURRENT_TASKS` | `20` |
 | Daemon ID | `--daemon-id` | `MULTICA_DAEMON_ID` | hostname |
 | Device name | `--device-name` | `MULTICA_DAEMON_DEVICE_NAME` | hostname |

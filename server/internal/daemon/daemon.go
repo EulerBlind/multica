@@ -8231,6 +8231,14 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if provider == "opencode" || provider == "codearts" {
 		idleWatchdogTimeout = d.cfg.OpenCodeIdleWatchdog
 	}
+	// cursor's stream-json emits long runs of step_finish (token-only) and
+	// tool_call progress (ignored) between assistant messages, so the global
+	// 30m idle watchdog force-stops legitimately long cursor runs. Cursor's
+	// override replaces (rather than narrows) the global bound — see the
+	// cursor branch in executeAndDrain's watchdog window selection.
+	if provider == "cursor" {
+		idleWatchdogTimeout = d.cfg.CursorIdleWatchdog
+	}
 	execOpts := agent.ExecOptions{
 		Cwd:                        env.WorkDir,
 		Model:                      model,
@@ -8239,6 +8247,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		SemanticInactivityTimeout:  d.cfg.CodexSemanticInactivityTimeout,
 		FirstTurnNoProgressTimeout: d.cfg.CodexFirstTurnNoProgressTimeout,
 		IdleWatchdogTimeout:        idleWatchdogTimeout,
+		Provider:                  provider,
 		HandshakeTimeout:           d.cfg.CodexHandshakeTimeout,
 		TurnInterruptTimeout:       d.cfg.CodexTurnInterruptTimeout,
 		ThreadHandshakeTimeout:     d.cfg.CodexThreadHandshakeTimeout,
@@ -8908,11 +8917,20 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 	// tripped the watchdog — the idle window or the larger in-flight-tool
 	// window — so the failure message reports the real duration.
 	idleWindow := d.cfg.AgentIdleWatchdog
-	// A provider may opt into a shorter per-run no-message budget. The global
-	// zero remains authoritative so MULTICA_AGENT_IDLE_WATCHDOG=0 still disables
-	// the entire watchdog suite. Tool calls continue to use AgentToolWatchdog.
-	if idleWindow > 0 && opts.IdleWatchdogTimeout > 0 && opts.IdleWatchdogTimeout < idleWindow {
-		idleWindow = opts.IdleWatchdogTimeout
+	// A provider may opt into a per-run no-message budget. The global zero
+	// remains authoritative so MULTICA_AGENT_IDLE_WATCHDOG=0 still disables the
+	// entire watchdog suite. Tool calls continue to use AgentToolWatchdog.
+	// - cursor: its stream-json emits long runs of step_finish (token-only)
+	//   and tool_call progress (ignored) between assistant messages, so the
+	//   override replaces (can extend) the global bound rather than narrowing.
+	// - opencode / others: narrow-only; a value above the global bound cannot
+	//   extend the safety net.
+	if idleWindow > 0 && opts.IdleWatchdogTimeout > 0 {
+		if opts.Provider == "cursor" {
+			idleWindow = opts.IdleWatchdogTimeout
+		} else if opts.IdleWatchdogTimeout < idleWindow {
+			idleWindow = opts.IdleWatchdogTimeout
+		}
 	}
 	var idleWatchdogThreshold atomic.Int64
 	idleWatchdogThreshold.Store(int64(idleWindow))

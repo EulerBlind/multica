@@ -60,7 +60,16 @@ const (
 	// real work short, so this is 2h.
 	//
 	// Set MULTICA_AGENT_IDLE_WATCHDOG=0 to disable the whole watchdog suite.
-	DefaultAgentIdleWatchdog              = 2 * time.Hour
+	DefaultAgentIdleWatchdog = 2 * time.Hour
+	// DefaultCursorIdleWatchdog is cursor's per-task no-message budget. Cursor's
+	// stream-json emits long runs of step_finish (token-only, not forwarded) and
+	// tool_call progress (ignored) between assistant messages, so the global
+	// default force-stops legitimately long cursor runs that are still working.
+	// 2h keeps the safety net for truly stuck runs. Unlike OpenCode's
+	// narrow-only override, cursor's value replaces the global bound (can
+	// extend it). Set MULTICA_CURSOR_IDLE_WATCHDOG=0 to fall back to
+	// AgentIdleWatchdog.
+	DefaultCursorIdleWatchdog             = 2 * time.Hour
 	DefaultRuntimeName                    = "Local Agent"
 	DefaultWorkspaceBootstrapSyncInterval = 30 * time.Second
 	DefaultWorkspaceLegacySyncInterval    = 5 * time.Minute
@@ -147,6 +156,7 @@ type Config struct {
 	// latency recorded in the Codex lifecycle logs.
 	CodexTurnInterruptTimeout   time.Duration
 	CodexThreadHandshakeTimeout time.Duration
+	CursorIdleWatchdog              time.Duration // cursor-specific no-message window; 0 falls back to AgentIdleWatchdog. Unlike OpenCode's narrow-only override, cursor's value replaces (can extend) the global bound
 	OpenCodeIdleWatchdog        time.Duration // OpenCode-specific no-message window; 0 falls back to AgentIdleWatchdog and values above it cannot extend the global bound
 	AgentIdleWatchdog           time.Duration // force-stop a run when the backend goes silent this long with an empty queue (0 = disabled)
 	AgentToolWatchdog           time.Duration // force-stop a run when a single tool call stays in flight (silent) this long (0 = never force-stop during a tool call, which now also covers a live Cursor background shell); defaults to AgentIdleWatchdog, so operators tune one number unless they deliberately want a wider tool budget
@@ -469,6 +479,17 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		codexTurnInterruptTimeout = DefaultCodexTurnInterruptTimeout
 	}
 
+	// MULTICA_CURSOR_IDLE_WATCHDOG sets cursor's per-task no-message budget.
+	// Unlike the OpenCode override (narrow-only), cursor's value replaces the
+	// global bound so a cursor run that emits only step_finish / tool_call
+	// progress between assistant messages is not force-stopped mid-run. Zero
+	// removes the override and falls back to MULTICA_AGENT_IDLE_WATCHDOG; the
+	// global zero still disables the whole mechanism.
+	cursorIdleWatchdog, err := durationFromEnv("MULTICA_CURSOR_IDLE_WATCHDOG", DefaultCursorIdleWatchdog)
+	if err != nil {
+		return Config{}, err
+	}
+
 	maxConcurrentTasks, err := intFromEnv("MULTICA_DAEMON_MAX_CONCURRENT_TASKS", DefaultMaxConcurrentTasks)
 	if err != nil {
 		return Config{}, err
@@ -657,6 +678,7 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		CodexHandshakeTimeout:           codexHandshakeTimeout,
 		CodexTurnInterruptTimeout:       codexTurnInterruptTimeout,
 		CodexThreadHandshakeTimeout:     codexThreadHandshakeTimeout,
+		CursorIdleWatchdog:              cursorIdleWatchdog,
 		OpenCodeIdleWatchdog:            openCodeIdleWatchdog,
 		AgentIdleWatchdog:               agentIdleWatchdog,
 		AgentToolWatchdog:               agentToolWatchdog,

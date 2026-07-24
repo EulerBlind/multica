@@ -3803,6 +3803,111 @@ func TestExecuteAndDrain_IdleWatchdog_PerRunOverrideCannotExtendGlobalWindow(t *
 	}
 }
 
+// TestExecuteAndDrain_IdleWatchdog_CursorOverrideExtendsGlobalWindow verifies
+// that a cursor provider override replaces (rather than narrows) the global
+// idle-watchdog bound. Cursor's stream-json emits long runs of step_finish
+// (token-only) and tool_call progress (ignored) between assistant messages,
+// so a legitimately long cursor run would otherwise trip the 30m global net.
+// Here the global window is 50ms but the cursor override is 500ms; the
+// watchdog must fire at 500ms, not 50ms.
+func TestExecuteAndDrain_IdleWatchdog_CursorOverrideExtendsGlobalWindow(t *testing.T) {
+	t.Parallel()
+
+	d := newTestDaemon(t)
+	d.cfg.AgentIdleWatchdog = 50 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	start := time.Now()
+	result, _, err := d.executeAndDrain(
+		ctx,
+		idleWatchdogBackend{emitOne: true},
+		"p",
+		agent.ExecOptions{Provider: "cursor", IdleWatchdogTimeout: 500 * time.Millisecond},
+		slog.Default(),
+		"t-cursor-extend",
+		"",
+		new(atomic.Int32),
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != "idle_watchdog" {
+		t.Fatalf("expected status=idle_watchdog, got %q (err=%q)", result.Status, result.Error)
+	}
+	if !strings.Contains(result.Error, "500ms") {
+		t.Fatalf("cursor override must extend the global threshold to 500ms, got %q", result.Error)
+	}
+	if elapsed := time.Since(start); elapsed < 400*time.Millisecond {
+		t.Fatalf("cursor override must not fire at the 50ms global window; fired at %s", elapsed)
+	}
+}
+
+// TestExecuteAndDrain_IdleWatchdog_CursorOverrideZeroFallsBackToGlobal verifies
+// that a zero cursor override falls back to the global AgentIdleWatchdog
+// window (cursor override is opt-in, not a hard floor).
+func TestExecuteAndDrain_IdleWatchdog_CursorOverrideZeroFallsBackToGlobal(t *testing.T) {
+	t.Parallel()
+
+	d := newTestDaemon(t)
+	d.cfg.AgentIdleWatchdog = 50 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	result, _, err := d.executeAndDrain(
+		ctx,
+		idleWatchdogBackend{emitOne: true},
+		"p",
+		agent.ExecOptions{Provider: "cursor", IdleWatchdogTimeout: 0},
+		slog.Default(),
+		"t-cursor-fallback",
+		"",
+		new(atomic.Int32),
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != "idle_watchdog" {
+		t.Fatalf("expected status=idle_watchdog, got %q (err=%q)", result.Status, result.Error)
+	}
+	if !strings.Contains(result.Error, "50ms") {
+		t.Fatalf("zero cursor override must fall back to the 50ms global window, got %q", result.Error)
+	}
+}
+
+// TestExecuteAndDrain_IdleWatchdog_CursorOverrideRespectsGlobalDisable verifies
+// that the global AgentIdleWatchdog=0 still disables the entire watchdog
+// suite for cursor, even when a cursor override is set — the global zero is
+// the authoritative kill switch.
+func TestExecuteAndDrain_IdleWatchdog_CursorOverrideRespectsGlobalDisable(t *testing.T) {
+	t.Parallel()
+
+	d := newTestDaemon(t)
+	d.cfg.AgentIdleWatchdog = 0
+
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(100*time.Millisecond, cancel)
+
+	result, _, err := d.executeAndDrain(
+		ctx,
+		idleWatchdogBackend{emitOne: true},
+		"p",
+		agent.ExecOptions{Provider: "cursor", IdleWatchdogTimeout: 20 * time.Millisecond},
+		slog.Default(),
+		"t-cursor-global-off",
+		"",
+		new(atomic.Int32),
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != "cancelled" {
+		t.Fatalf("global watchdog disable must win even with a cursor override; got status=%q (err=%q)", result.Status, result.Error)
+	}
+}
+
 func TestExecuteAndDrain_IdleWatchdog_DisabledWhenZero(t *testing.T) {
 	t.Parallel()
 
