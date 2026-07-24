@@ -53,8 +53,16 @@ type ExecOptions struct {
 	// watchdog for this execution. Zero keeps the daemon-wide window, and a
 	// value above that window cannot extend the global safety bound. The
 	// daemon-wide zero still disables the watchdog entirely, and an in-flight
-	// tool continues to use the separate tool watchdog budget.
+	// tool continues to use the separate tool watchdog budget. Cursor is the
+	// exception: its stream-json emits long runs of step_finish (token-only)
+	// and tool_call progress (ignored) between assistant messages, so the
+	// cursor override replaces (rather than narrows) the global bound — see
+	// Provider == "cursor" handling in the daemon.
 	IdleWatchdogTimeout time.Duration
+	// Provider is the backend provider name (e.g. "cursor", "opencode"). It
+	// selects provider-specific idle-watchdog semantics in the daemon (cursor's
+	// override replaces the global bound; other providers narrow it).
+	Provider string
 	// HandshakeTimeout bounds startup RPCs for providers with a long-lived
 	// protocol transport. It is currently consumed by Codex app-server;
 	// zero uses the provider default rather than disabling the bound.
