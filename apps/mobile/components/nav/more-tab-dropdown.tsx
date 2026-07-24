@@ -35,7 +35,7 @@
  *     and offered no friction against accidental taps.
  */
 import { useMemo } from "react";
-import { Image, Linking, Pressable, View } from "react-native";
+import { Image, Pressable, View } from "react-native";
 import { router, usePathname } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -68,7 +68,7 @@ import type { PlatformNavIconName } from "@/components/nav/platform-nav-icon-map
 const TAB_BAR_HEIGHT = 49;
 
 interface NavItem {
-  labelKey: "more_menu.pinned" | "more_menu.issues" | "more_menu.projects";
+  label: string;
   /** Logical platform icon; renders as an SF Symbol on iOS and a bundled
    *  Ionicon on Android via `<PlatformNavIcon>`. */
   icon: PlatformNavIconName;
@@ -77,19 +77,13 @@ interface NavItem {
 }
 
 const NAV_ITEMS: NavItem[] = [
-  { labelKey: "more_menu.pinned", icon: "pinned", path: "/more/pins" },
-  { labelKey: "more_menu.issues", icon: "issues", path: "/more/issues" },
-  { labelKey: "more_menu.projects", icon: "projects", path: "/more/projects" },
+  { label: "Pinned", icon: "pinned", path: "/more/pins" },
+  { label: "Issues", icon: "issues", path: "/more/issues" },
+  { label: "Projects", icon: "projects", path: "/more/projects" },
+  // Autopilots open in-app (list + detail). Must NOT use Linking.openURL /
+  // external browser — see QIA-319 replan.
+  { label: "Autopilots", icon: "autopilots", path: "/more/autopilots" },
 ];
-
-// Autopilots (定时任务 / scheduled tasks) have no native mobile screen.
-// Rather than ship a static placeholder, the entry deep-links into the web
-// autopilots workspace (`/{slug}/autopilots`) where the full view / create /
-// manage / schedule-editor flow already exists. Routed through the frontend
-// `app_url` (`EXPO_PUBLIC_WEB_URL`), never the API `server_url`. Only shown
-// when a web URL is configured — same gate as the issue / project "Open on
-// web" actions.
-const AUTOPILOTS_WEB_PATH = "/autopilots";
 
 export function MoreTabDropdownAnchor({
   triggerRef,
@@ -104,9 +98,6 @@ export function MoreTabDropdownAnchor({
   const { t } = useT("navigation");
   const theme = THEME[colorScheme];
   const currentWorkspace = useCurrentWorkspace(slug);
-  const webUrl = process.env.EXPO_PUBLIC_WEB_URL;
-  const autopilotsHref =
-    webUrl && slug ? `${webUrl}/${slug}${AUTOPILOTS_WEB_PATH}` : null;
 
   const isActive = (path: string) => {
     if (!slug) return false;
@@ -168,7 +159,7 @@ export function MoreTabDropdownAnchor({
             <DropdownMenuItem
               key={item.path}
               onPress={() => slug && router.push(`/${slug}${item.path}`)}
-              accessibilityLabel={t(item.labelKey)}
+              accessibilityLabel={item.label}
               className={cn(
                 "h-9 gap-3",
                 isActive(item.path) && "bg-secondary",
@@ -180,25 +171,9 @@ export function MoreTabDropdownAnchor({
                 size={18}
                 focused={isActive(item.path)}
               />
-              <Text className="text-sm text-foreground">{t(item.labelKey)}</Text>
+              <Text className="text-sm text-foreground">{item.label}</Text>
             </DropdownMenuItem>
           ))}
-
-          {autopilotsHref ? (
-            <DropdownMenuItem
-              onPress={() => void Linking.openURL(autopilotsHref).catch(() => undefined)}
-              accessibilityLabel="Autopilots"
-              className="h-9 gap-3"
-            >
-              <PlatformNavIcon
-                name="autopilots"
-                color={t.foreground}
-                size={18}
-                focused={false}
-              />
-              <Text className="text-sm text-foreground">Autopilots</Text>
-            </DropdownMenuItem>
-          ) : null}
         </DropdownMenuContent>
       </DropdownMenu>
     </View>

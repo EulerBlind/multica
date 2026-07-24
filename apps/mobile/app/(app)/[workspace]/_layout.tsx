@@ -314,6 +314,17 @@ export default function WorkspaceLayout() {
             }}
         />
         <Stack.Screen
+          name="more/autopilots"
+          options={{ title: "Autopilots", headerBackTitle: "Back" }}
+        />
+        <Stack.Screen
+          name="autopilot/[id]"
+          options={{
+            title: "Autopilot",
+            headerBackTitle: "Back",
+          }}
+        />
+        <Stack.Screen
           name="more/agents"
             options={{
               title: t("navigation:routes.agents"),
