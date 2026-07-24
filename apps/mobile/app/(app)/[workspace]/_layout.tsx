@@ -306,6 +306,17 @@ export default function WorkspaceLayout() {
           options={{ title: "Projects", headerBackTitle: "Back" }}
         />
         <Stack.Screen
+          name="more/autopilots"
+          options={{ title: "Autopilots", headerBackTitle: "Back" }}
+        />
+        <Stack.Screen
+          name="autopilot/[id]"
+          options={{
+            title: "Autopilot",
+            headerBackTitle: "Back",
+          }}
+        />
+        <Stack.Screen
           name="more/agents"
           options={{ title: "Agents", headerBackTitle: "Back" }}
         />

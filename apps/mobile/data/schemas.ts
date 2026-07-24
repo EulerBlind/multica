@@ -15,13 +15,19 @@ import type {
   AgentInvocationTarget,
   AgentTask,
   Attachment,
+  Autopilot,
+  AutopilotRun,
+  AutopilotTrigger,
   ChatMessage,
   ChatPendingTask,
   ChatSession,
   Comment,
+  GetAutopilotResponse,
   InboxItem,
   IssueLabelsResponse,
   Label,
+  ListAutopilotRunsResponse,
+  ListAutopilotsResponse,
   ListLabelsResponse,
   ListProjectResourcesResponse,
   ListProjectsResponse,
@@ -738,6 +744,117 @@ export const SquadSchema: z.ZodType<Squad> = z.object({
 
 export const SquadListSchema = z.array(SquadSchema).default([]);
 export const EMPTY_SQUAD_LIST: Squad[] = [];
+
+// Autopilot list/detail/runs — mirror packages/core/api/schemas.ts enums as
+// z.string() so future server values degrade instead of rejecting the page.
+// List-only derived fields (trigger_kinds / next_run_at / last_run_status)
+// are optional; detail fills triggers. Mobile only needs read paths here.
+const AutopilotListItemSchema = z.object({
+  id: z.string(),
+  workspace_id: z.string(),
+  title: z.string(),
+  description: z.string().nullable().optional(),
+  project_id: z.string().nullable().optional(),
+  assignee_type: z.string().default("agent"),
+  assignee_id: z.string(),
+  status: z.string(),
+  execution_mode: z.string(),
+  issue_title_template: z.string().nullable().optional(),
+  created_by_type: z.string(),
+  created_by_id: z.string(),
+  last_run_at: z.string().nullable().optional(),
+  created_at: z.string(),
+  updated_at: z.string(),
+  trigger_kinds: z.array(z.string()).optional(),
+  next_run_at: z.string().nullable().optional(),
+  last_run_status: z.string().nullable().optional(),
+  can_write: z.boolean().optional(),
+  can_manage_access: z.boolean().optional(),
+}).loose();
+
+export const ListAutopilotsResponseSchema: z.ZodType<ListAutopilotsResponse> =
+  z.object({
+    autopilots: z.array(AutopilotListItemSchema).default([]),
+    total: z.number().default(0),
+  }).loose() as z.ZodType<ListAutopilotsResponse>;
+
+export const EMPTY_LIST_AUTOPILOTS_RESPONSE: ListAutopilotsResponse = {
+  autopilots: [],
+  total: 0,
+};
+
+const AutopilotTriggerSchema = z.object({
+  id: z.string(),
+  autopilot_id: z.string(),
+  kind: z.string(),
+  enabled: z.boolean(),
+  cron_expression: z.string().nullable().optional(),
+  timezone: z.string().nullable().optional(),
+  next_run_at: z.string().nullable().optional(),
+  webhook_token: z.string().nullable().optional(),
+  webhook_path: z.string().nullable().optional(),
+  webhook_url: z.string().nullable().optional(),
+  label: z.string().nullable().optional(),
+  last_fired_at: z.string().nullable().optional(),
+  created_at: z.string(),
+  updated_at: z.string(),
+}).loose();
+
+export const GetAutopilotResponseSchema: z.ZodType<GetAutopilotResponse> =
+  z.object({
+    autopilot: AutopilotListItemSchema,
+    triggers: z.array(AutopilotTriggerSchema).default([]),
+    collaborators: z.array(z.unknown()).optional(),
+  }).loose() as z.ZodType<GetAutopilotResponse>;
+
+export const EMPTY_GET_AUTOPILOT_RESPONSE: GetAutopilotResponse = {
+  autopilot: {
+    id: "",
+    workspace_id: "",
+    title: "",
+    description: null,
+    project_id: null,
+    assignee_type: "agent",
+    assignee_id: "",
+    status: "paused",
+    execution_mode: "create_issue",
+    issue_title_template: null,
+    created_by_type: "member",
+    created_by_id: "",
+    last_run_at: null,
+    created_at: "",
+    updated_at: "",
+  } satisfies Autopilot,
+  triggers: [] as AutopilotTrigger[],
+};
+
+const AutopilotRunItemSchema = z.object({
+  id: z.string().default(""),
+  autopilot_id: z.string().default(""),
+  trigger_id: z.string().nullable().default(null),
+  source: z.string().default("manual"),
+  status: z.string().default("failed"),
+  issue_id: z.string().nullable().default(null),
+  task_id: z.string().nullable().default(null),
+  triggered_at: z.string().default(""),
+  completed_at: z.string().nullable().default(null),
+  failure_reason: z.string().nullable().default(null),
+  reason_code: z.string().optional(),
+  trigger_payload: z.unknown().default(null),
+  result: z.unknown().default(null),
+  created_at: z.string().default(""),
+}).loose();
+
+export const ListAutopilotRunsResponseSchema: z.ZodType<ListAutopilotRunsResponse> =
+  z.object({
+    runs: z.array(AutopilotRunItemSchema).default([]),
+    total: z.number().default(0),
+  }).loose() as z.ZodType<ListAutopilotRunsResponse>;
+
+export const EMPTY_LIST_AUTOPILOT_RUNS_RESPONSE: ListAutopilotRunsResponse = {
+  runs: [] as AutopilotRun[],
+  total: 0,
+};
 
 // Single-issue fallback used by getIssue. Mobile reuses IssueSchema from core
 // for parsing; this sentinel lets parseWithFallback yield a structurally-

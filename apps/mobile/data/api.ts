@@ -25,11 +25,14 @@ import type {
   CreateLabelRequest,
   CreateProjectRequest,
   CreateProjectResourceRequest,
+  GetAutopilotResponse,
   InboxItem,
   Issue,
   IssueLabelsResponse,
   Label,
   IssueReaction,
+  ListAutopilotRunsResponse,
+  ListAutopilotsResponse,
   ListIssuesParams,
   ListIssuesResponse,
   ListLabelsResponse,
@@ -91,8 +94,11 @@ import {
   EMPTY_CHAT_PENDING_TASK,
   EMPTY_CHAT_SESSION_LIST,
   EMPTY_COMMENT,
+  EMPTY_GET_AUTOPILOT_RESPONSE,
   EMPTY_INBOX_LIST,
   EMPTY_ISSUE_FALLBACK,
+  EMPTY_LIST_AUTOPILOT_RUNS_RESPONSE,
+  EMPTY_LIST_AUTOPILOTS_RESPONSE,
   EMPTY_LIST_LABELS_RESPONSE,
   EMPTY_LIST_PROJECT_RESOURCES_RESPONSE,
   EMPTY_LIST_PROJECTS_RESPONSE,
@@ -106,8 +112,11 @@ import {
   EMPTY_SQUAD_LIST,
   EMPTY_USER,
   EMPTY_WORKSPACE_LIST,
+  GetAutopilotResponseSchema,
   InboxListSchema,
   NotificationPreferenceResponseSchema,
+  ListAutopilotRunsResponseSchema,
+  ListAutopilotsResponseSchema,
   ListLabelsResponseSchema,
   ListProjectResourcesResponseSchema,
   ListProjectsResponseSchema,
@@ -574,6 +583,59 @@ class ApiClient {
     return parseWithFallback(raw, SquadListSchema, EMPTY_SQUAD_LIST, {
       endpoint: "listSquads",
     });
+  }
+
+  // Autopilots (scheduled / webhook / manual automations). Read paths only —
+  // create/edit/trigger stay on web for now; mobile needs list + detail so
+  // the More → Autopilots entry can open in-app instead of Linking.openURL.
+  async listAutopilots(opts?: {
+    signal?: AbortSignal;
+  }): Promise<ListAutopilotsResponse> {
+    const raw = await this.fetch<unknown>("/api/autopilots", {
+      signal: opts?.signal,
+    });
+    return parseWithFallback(
+      raw,
+      ListAutopilotsResponseSchema,
+      EMPTY_LIST_AUTOPILOTS_RESPONSE,
+      { endpoint: "GET /api/autopilots" },
+    );
+  }
+
+  async getAutopilot(
+    id: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<GetAutopilotResponse> {
+    const raw = await this.fetch<unknown>(`/api/autopilots/${id}`, {
+      signal: opts?.signal,
+    });
+    return parseWithFallback(
+      raw,
+      GetAutopilotResponseSchema,
+      EMPTY_GET_AUTOPILOT_RESPONSE,
+      { endpoint: "GET /api/autopilots/:id" },
+    );
+  }
+
+  async listAutopilotRuns(
+    id: string,
+    params?: { limit?: number; offset?: number },
+    opts?: { signal?: AbortSignal },
+  ): Promise<ListAutopilotRunsResponse> {
+    const search = new URLSearchParams();
+    if (params?.limit) search.set("limit", String(params.limit));
+    if (params?.offset) search.set("offset", String(params.offset));
+    const qs = search.toString();
+    const raw = await this.fetch<unknown>(
+      `/api/autopilots/${id}/runs${qs ? `?${qs}` : ""}`,
+      { signal: opts?.signal },
+    );
+    return parseWithFallback(
+      raw,
+      ListAutopilotRunsResponseSchema,
+      EMPTY_LIST_AUTOPILOT_RUNS_RESPONSE,
+      { endpoint: "GET /api/autopilots/:id/runs" },
+    );
   }
 
   // --- Issues ---
