@@ -48,27 +48,29 @@ export function RunRow({ task, issueId }: Props) {
   };
 
   return (
-    <Pressable
-      onPress={openDetail}
-      accessibilityRole="button"
-      accessibilityLabel={`Open run details for ${getName("agent", task.agent_id)}`}
-      className="flex-row items-start gap-3 py-2 active:opacity-70"
-    >
-      <ActorAvatar type="agent" id={task.agent_id} size={28} showPresence />
-      <View className="flex-1 gap-1">
-        <Text className="text-sm text-foreground" numberOfLines={2}>
-          <Text className="font-medium">{getName("agent", task.agent_id)}</Text>
-          <Text className="text-muted-foreground"> · {summary}</Text>
-        </Text>
-        <View className="flex-row items-center gap-2">
-          <StatusBadge task={task} />
-          <Text className="text-xs text-muted-foreground">
-            {timestamp ? timeAgo(timestamp) : ""}
+    <View className="flex-row items-start gap-3 py-2">
+      <Pressable
+        onPress={openDetail}
+        accessibilityRole="button"
+        accessibilityLabel={`Open run details for ${getName("agent", task.agent_id)}`}
+        className="flex-1 flex-row items-start gap-3 active:opacity-70"
+      >
+        <ActorAvatar type="agent" id={task.agent_id} size={28} showPresence />
+        <View className="flex-1 gap-1">
+          <Text className="text-sm text-foreground" numberOfLines={2}>
+            <Text className="font-medium">{getName("agent", task.agent_id)}</Text>
+            <Text className="text-muted-foreground"> · {summary}</Text>
           </Text>
+          <View className="flex-row items-center gap-2">
+            <StatusBadge task={task} />
+            <Text className="text-xs text-muted-foreground">
+              {timestamp ? timeAgo(timestamp) : ""}
+            </Text>
+          </View>
         </View>
-      </View>
+      </Pressable>
       {isActive ? <CancelButton taskId={task.id} issueId={issueId} /> : null}
-    </Pressable>
+    </View>
   );
 }
 
