@@ -1,7 +1,6 @@
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
 import {
   ActivityIndicator,
-  Linking,
   Platform,
   Pressable,
   ScrollView,
@@ -26,7 +25,7 @@ import {
   getAttachmentPreviewKind,
   htmlToStaticText,
 } from "@/lib/attachment-preview";
-import { resolveAttachmentDownloadUrl } from "@/lib/attachment-url";
+import { downloadAndOpenAttachment } from "@/lib/download-attachment";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { THEME } from "@/lib/theme";
 
@@ -45,16 +44,20 @@ export default function AttachmentPreviewRoute() {
   const content = useQuery(
     attachmentContentOptions(workspaceId, id, isTextBacked),
   );
+  const [downloading, setDownloading] = useState(false);
 
-  const downloadUrl = resolveAttachmentDownloadUrl(
-    attachment?.download_url ||
-      attachment?.markdown_url ||
-      attachment?.url ||
-      `/api/attachments/${id}/download`,
-  );
-  const download = useCallback(() => {
-    if (downloadUrl) void Linking.openURL(downloadUrl);
-  }, [downloadUrl]);
+  const download = useCallback(async () => {
+    if (!attachment?.id || downloading) return;
+    setDownloading(true);
+    try {
+      await downloadAndOpenAttachment(
+        attachment.id,
+        attachment.filename || "download",
+      );
+    } finally {
+      setDownloading(false);
+    }
+  }, [attachment?.id, attachment?.filename, downloading]);
 
   return (
     <View className="flex-1 bg-background">
@@ -64,18 +67,22 @@ export default function AttachmentPreviewRoute() {
           headerBackTitle: "Back",
           headerRight: () => (
             <Pressable
-              onPress={download}
-              disabled={!downloadUrl}
+              onPress={() => void download()}
+              disabled={!attachment?.id || downloading}
               hitSlop={10}
               accessibilityRole="button"
               accessibilityLabel="Download attachment"
               className="h-9 w-9 items-center justify-center disabled:opacity-40"
             >
-              <Ionicons
-                name="download-outline"
-                size={21}
-                color={theme.foreground}
-              />
+              {downloading ? (
+                <ActivityIndicator size="small" color={theme.foreground} />
+              ) : (
+                <Ionicons
+                  name="download-outline"
+                  size={21}
+                  color={theme.foreground}
+                />
+              )}
             </Pressable>
           ),
         }}
@@ -86,22 +93,25 @@ export default function AttachmentPreviewRoute() {
       ) : metadata.error || !attachment?.id ? (
         <DownloadFallback
           message="Could not load attachment metadata."
-          onDownload={download}
-          disabled={!downloadUrl}
+          onDownload={() => void download()}
+          disabled={!attachment?.id || downloading}
+          downloading={downloading}
         />
       ) : !isTextBacked ? (
         <DownloadFallback
           message="This file type is not available for in-app preview."
-          onDownload={download}
-          disabled={!downloadUrl}
+          onDownload={() => void download()}
+          disabled={downloading}
+          downloading={downloading}
         />
       ) : content.isLoading ? (
         <CenteredMessage loading message="Loading preview…" />
       ) : content.error ? (
         <DownloadFallback
           message={previewErrorMessage(content.error)}
-          onDownload={download}
-          disabled={!downloadUrl}
+          onDownload={() => void download()}
+          disabled={downloading}
+          downloading={downloading}
         />
       ) : content.data ? (
         <PreviewBody kind={kind} text={content.data.text} />
@@ -215,10 +225,12 @@ function DownloadFallback({
   message,
   onDownload,
   disabled,
+  downloading = false,
 }: {
   message: string;
   onDownload: () => void;
   disabled: boolean;
+  downloading?: boolean;
 }) {
   const { colorScheme } = useColorScheme();
   const theme = THEME[colorScheme];
@@ -233,12 +245,16 @@ function DownloadFallback({
         {message}
       </Text>
       <Button variant="outline" onPress={onDownload} disabled={disabled}>
-        <Ionicons
-          name="download-outline"
-          size={18}
-          color={theme.foreground}
-        />
-        <Text>Download</Text>
+        {downloading ? (
+          <ActivityIndicator size="small" color={theme.foreground} />
+        ) : (
+          <Ionicons
+            name="download-outline"
+            size={18}
+            color={theme.foreground}
+          />
+        )}
+        <Text>{downloading ? "Downloading…" : "Download"}</Text>
       </Button>
     </View>
   );

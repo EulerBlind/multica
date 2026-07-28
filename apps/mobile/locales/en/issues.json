@@ -197,7 +197,9 @@
     "more_reactions": "More reactions...",
     "fallback_actor": "comment",
     "composer_placeholder": "Add a comment…",
-    "composer_pill": "Add a comment, type @ to mention..."
+    "composer_pill": "Add a comment, type @ to mention...",
+    "composer_edit_placeholder": "Edit comment…",
+    "composer_edit_pill": "Edit comment…"
   },
   "suggestions": {
     "everyone": "Everyone",

@@ -2,19 +2,21 @@
  * Inline issue-comment composer — thin wrapper around the shared
  * `<MessageComposer>` with comment-specific wiring:
  *
- *   - `onSubmit` → `useCreateComment(issueId).mutateAsync`
- *   - Reply target sourced from `useReplyTargetStore` (set by the
- *     comment long-press action sheet)
+ *   - Create → `useCreateComment(issueId).mutateAsync`
+ *   - Edit   → `useEditComment(issueId).mutateAsync` when edit-target store
+ *              is set (long-press → Edit on own comments)
+ *   - Reply target from `useReplyTargetStore`
+ *   - Edit target from `useEditTargetStore` (seeds draft text)
  *   - Mention picker path → `/[workspace]/mention-picker?mode=comment`
- *   - Upload context binds attachments to this issue
- *
- * All UI / state / chip plumbing lives in `MessageComposer`. The chat
- * composer (`components/chat/chat-composer.tsx`) uses the same component
- * with chat-mode props.
  */
-import { useCallback } from "react";
-import { useCreateComment } from "@/data/mutations/issues";
+import { useCallback, useEffect, useState } from "react";
+import { Alert } from "react-native";
+import {
+  useCreateComment,
+  useEditComment,
+} from "@/data/mutations/issues";
 import { useReplyTargetStore } from "@/data/stores/reply-target-store";
+import { useEditTargetStore } from "@/data/stores/edit-target-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { MessageComposer } from "@/components/composer/message-composer";
 import { useT } from "@/lib/i18n";
@@ -22,9 +24,21 @@ import { useT } from "@/lib/i18n";
 export function InlineCommentComposer({ issueId }: { issueId: string }) {
   const createComment = useCreateComment(issueId);
   const { t } = useT("issues");
+  const editComment = useEditComment(issueId);
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
   const replyTarget = useReplyTargetStore((s) => s.target);
   const clearReplyTarget = useReplyTargetStore((s) => s.clear);
+  const editTarget = useEditTargetStore((s) => s.target);
+  const clearEditTarget = useEditTargetStore((s) => s.clear);
+
+  const [editDraft, setEditDraft] = useState("");
+
+  // Seed the controlled draft whenever a new edit target lands.
+  useEffect(() => {
+    if (editTarget) {
+      setEditDraft(editTarget.content);
+    }
+  }, [editTarget?.commentId, editTarget?.content]);
 
   const onSubmit = useCallback(
     async ({
@@ -35,20 +49,53 @@ export function InlineCommentComposer({ issueId }: { issueId: string }) {
       attachmentIds: string[];
     }) => {
       try {
+        if (editTarget) {
+          await editComment.mutateAsync({
+            commentId: editTarget.commentId,
+            content,
+            attachmentIds:
+              attachmentIds.length > 0
+                ? attachmentIds
+                : editTarget.attachmentIds.length > 0
+                  ? editTarget.attachmentIds
+                  : undefined,
+          });
+          clearEditTarget();
+          setEditDraft("");
+          return;
+        }
         await createComment.mutateAsync({
           content,
           parentId: replyTarget?.commentId,
           attachmentIds: attachmentIds.length > 0 ? attachmentIds : undefined,
         });
       } catch (err) {
+        if (editTarget) {
+          Alert.alert(
+            "Could not save edit",
+            err instanceof Error ? err.message : "Unknown error",
+          );
+        }
         // Rethrow so MessageComposer's catch path restores text + chips.
-        // The optimistic timeline row stays with its inline
-        // Failed · Retry · Discard affordance.
         throw err;
       }
     },
-    [createComment, replyTarget?.commentId],
+    [
+      createComment,
+      editComment,
+      replyTarget?.commentId,
+      editTarget,
+      clearEditTarget,
+    ],
   );
+
+  const clearComposerTarget = useCallback(() => {
+    clearReplyTarget();
+    clearEditTarget();
+    setEditDraft("");
+  }, [clearReplyTarget, clearEditTarget]);
+
+  const isEditing = !!editTarget;
 
   return (
     <MessageComposer
@@ -58,19 +105,36 @@ export function InlineCommentComposer({ issueId }: { issueId: string }) {
         params: { workspace: wsSlug ?? "", mode: "comment" },
       }}
       uploadContext={{ issueId }}
-      placeholder={t("comments.composer_placeholder")}
-      pillLabel={t("comments.composer_pill")}
-      pillIcon="chatbubble-ellipses-outline"
-      replyTarget={
-        replyTarget
-          ? {
-              actorName: replyTarget.actorName,
-              preview: replyTarget.preview,
-            }
-          : null
+      placeholder={
+        isEditing
+          ? t("comments.composer_edit_placeholder")
+          : t("comments.composer_placeholder")
       }
-      onClearReplyTarget={clearReplyTarget}
-      expandTrigger={replyTarget?.commentId ?? null}
+      pillLabel={
+        isEditing ? t("comments.composer_edit_pill") : t("comments.composer_pill")
+      }
+      pillIcon="chatbubble-ellipses-outline"
+      value={isEditing ? editDraft : undefined}
+      onChangeText={isEditing ? setEditDraft : undefined}
+      replyTarget={
+        isEditing
+          ? {
+              actorName: "Editing",
+              preview: editTarget.content,
+            }
+          : replyTarget
+            ? {
+                actorName: replyTarget.actorName,
+                preview: replyTarget.preview,
+              }
+            : null
+      }
+      onClearReplyTarget={clearComposerTarget}
+      expandTrigger={
+        editTarget?.commentId
+          ? `edit:${editTarget.commentId}`
+          : (replyTarget?.commentId ?? null)
+      }
     />
   );
 }

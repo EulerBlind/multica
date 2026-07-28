@@ -195,7 +195,9 @@
     "more_reactions": "更多表情...",
     "fallback_actor": "评论",
     "composer_placeholder": "添加评论...",
-    "composer_pill": "添加评论，输入 @ 提及..."
+    "composer_pill": "添加评论，输入 @ 提及...",
+    "composer_edit_placeholder": "编辑评论…",
+    "composer_edit_pill": "编辑评论…"
   },
   "suggestions": {
     "everyone": "所有人",
