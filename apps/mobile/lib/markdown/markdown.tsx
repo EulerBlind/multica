@@ -47,7 +47,7 @@ import {
   findAttachmentForUrl,
   getAttachmentOpenMode,
 } from "@/lib/attachment-preview";
-import { resolveAttachmentDownloadUrl } from "@/lib/attachment-url";
+import { downloadAndOpenAttachment } from "@/lib/download-attachment";
 import { preprocessMobileMarkdown } from "./preprocess";
 import { useMarkdownStyle } from "./markdown-style";
 import { splitMarkdown } from "./split-markdown";
@@ -188,15 +188,12 @@ export function Markdown({
           return;
         }
 
-        const target = resolveAttachmentDownloadUrl(
-          attachment.download_url ||
-            attachment.markdown_url ||
-            attachment.url ||
-            `/api/attachments/${attachment.id}/download`,
+        // Authenticated App download — bare Linking.openURL against the
+        // web host has no Bearer token and returns 401 on private deploys.
+        void downloadAndOpenAttachment(
+          attachment.id,
+          attachment.filename || "download",
         );
-        if (target) {
-          Linking.openURL(target).catch(() => undefined);
-        }
         return;
       }
 

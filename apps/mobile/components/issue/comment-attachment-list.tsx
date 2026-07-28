@@ -23,13 +23,13 @@
  * binary media use the OS preview; unsupported types retain download.
  */
 import { useMemo } from "react";
-import { Linking, Pressable, View } from "react-native";
+import { Pressable, View } from "react-native";
 import { router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import type { Attachment } from "@multica/core/types";
 import { standaloneAttachments } from "@/lib/attachment-dedup";
 import { MarkdownImage } from "@/lib/markdown/markdown-image";
-import { resolveAttachmentDownloadUrl } from "@/lib/attachment-url";
+import { downloadAndOpenAttachment } from "@/lib/download-attachment";
 import { getAttachmentOpenMode } from "@/lib/attachment-preview";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { useColorScheme } from "@/lib/use-color-scheme";
@@ -113,11 +113,10 @@ function FileCard({
       return;
     }
 
-    // Media preview and unsupported-file download both hand the fresh
-    // canonical URL to the OS. Unknown types intentionally retain the old
-    // download behavior instead of navigating to a broken preview screen.
-    const target = resolveAttachmentDownloadUrl(attachment.download_url);
-    if (target) void Linking.openURL(target).catch(() => undefined);
+    // Media preview and unsupported-file download both use an authenticated
+    // App download (Bearer + workspace slug). Bare Linking.openURL against
+    // the web host returns 401 on private deployments.
+    void downloadAndOpenAttachment(attachment.id, attachment.filename);
   };
 
   return (

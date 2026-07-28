@@ -27,10 +27,10 @@
  * vertical footprint minimal.
  */
 import { useMemo } from "react";
-import { ActivityIndicator, Linking, Pressable, ScrollView, View } from "react-native";
+import { ActivityIndicator, Pressable, ScrollView, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
-import { resolveAttachmentDownloadUrl } from "@/lib/attachment-url";
+import { downloadAndOpenAttachment } from "@/lib/download-attachment";
 import { getAttachmentOpenMode } from "@/lib/attachment-preview";
 import { useLightbox } from "@/lib/markdown/lightbox-provider";
 import { useWorkspaceStore } from "@/data/workspace-store";
@@ -211,11 +211,10 @@ function AttachmentChipView({ item, onRemove, onRetry }: AttachmentChipProps) {
         return;
       }
 
-      // Binary preview is delegated to the OS; unknown types preserve the
-      // existing download fallback. Server-relative URLs are made absolute
-      // before crossing the React Native Linking boundary.
-      const target = resolveAttachmentDownloadUrl(item.downloadUrl);
-      if (target) void Linking.openURL(target).catch(() => undefined);
+      // Binary / unknown types: authenticated App download, then OS open.
+      if (item.id) {
+        void downloadAndOpenAttachment(item.id, item.filename);
+      }
     }
   };
 
