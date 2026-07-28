@@ -203,6 +203,12 @@ class ApiClient {
     this.token = token;
   }
 
+  /** Current Bearer token — used by authenticated file downloads that
+   *  go through expo-file-system rather than `this.fetch`. */
+  getToken(): string | null {
+    return this.token;
+  }
+
   setOptions(options: ApiClientOptions) {
     this.options = { ...this.options, ...options };
   }

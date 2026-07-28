@@ -42,6 +42,7 @@ import { useWorkspaceStore } from "@/data/workspace-store";
 import { useViewedIssuesStore } from "@/data/viewed-issues-store";
 import { useCommentSelectStore } from "@/data/comment-select-store";
 import { useReplyTargetStore } from "@/data/stores/reply-target-store";
+import { useEditTargetStore } from "@/data/stores/edit-target-store";
 
 export default function IssueDetail() {
   const showActionSheet = useActionSheet();
@@ -86,6 +87,7 @@ export default function IssueDetail() {
     return () => {
       useCommentSelectStore.getState().clear();
       useReplyTargetStore.getState().clear();
+      useEditTargetStore.getState().clear();
     };
   }, []);
 

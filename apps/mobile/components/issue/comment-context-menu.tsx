@@ -25,6 +25,7 @@ import { useAuthStore } from "@/data/auth-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { useCommentSelectStore } from "@/data/comment-select-store";
 import { useReplyTargetStore } from "@/data/stores/reply-target-store";
+import { useEditTargetStore } from "@/data/stores/edit-target-store";
 import { useActorLookup } from "@/data/use-actor-name";
 import {
   useDeleteComment,
@@ -65,6 +66,7 @@ export function useCommentLongPress(
 
     type Action =
       | { kind: "reply" }
+      | { kind: "edit" }
       | { kind: "react" }
       | { kind: "copy" }
       | { kind: "select" }
@@ -79,6 +81,7 @@ export function useCommentLongPress(
     };
 
     push("Reply", { kind: "reply" });
+    if (isOwn) push("Edit", { kind: "edit" });
     push("React…", { kind: "react" });
     if (hasContent) {
       push("Copy", { kind: "copy" });
@@ -99,9 +102,7 @@ export function useCommentLongPress(
 
       switch (action.kind) {
         case "reply": {
-          // Set the reply target — the InlineCommentComposer subscribes
-          // to this store, auto-expands, and threads the next submit
-          // under entry.id via useCreateComment's `parentId`.
+          useEditTargetStore.getState().clear();
           const actorName = getName(
             entry.actor_type as "member" | "agent" | null | undefined,
             entry.actor_id,
@@ -113,9 +114,18 @@ export function useCommentLongPress(
           });
           return;
         }
+        case "edit": {
+          useReplyTargetStore.getState().clear();
+          useEditTargetStore.getState().setTarget({
+            commentId: entry.id,
+            content: entry.content ?? "",
+            attachmentIds: (entry.attachments ?? [])
+              .map((a) => a.id)
+              .filter(Boolean),
+          });
+          return;
+        }
         case "react":
-          // Present the nested React sheet from inside this completion
-          // callback — see file header for why.
           presentReactSheet({
             showActionSheet,
             entry,
