@@ -299,7 +299,7 @@ export default function WorkspaceLayout() {
           name="new-project-picker/priority"
           options={SHEET_OPTIONS}
         />
-        {/* Shared filter sheet for My Issues and the workspace Issues page —
+        {/* Shared filter sheet for the workspace Issues tab —
             chooses the right view-store via `?scope=my|all` URL param. */}
         <Stack.Screen name="issues-filter" options={SHEET_OPTIONS} />
         {/* Chat session-switch sheet. */}
@@ -307,13 +307,6 @@ export default function WorkspaceLayout() {
         {/* Workspace switcher — reached from the More popover's collapsed
             WorkspaceCard. Two-step (pick → iOS Alert confirm → switch). */}
         <Stack.Screen name="switch-workspace" options={SHEET_OPTIONS} />
-        <Stack.Screen
-          name="more/issues"
-            options={{
-              title: t("navigation:routes.issues"),
-              headerBackTitle: t("back"),
-            }}
-        />
         <Stack.Screen
           name="more/projects"
             options={{

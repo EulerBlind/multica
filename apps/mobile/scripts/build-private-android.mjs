@@ -5,7 +5,14 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const defaultMobileDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const apiUrl = "https://direct.multica-be.elvisiky.com:3000";
+// QIA-393: the private deployment serves both the API (server_url) and the
+// web app (app_url) from the same unified domain
+// (https://direct.multica.elvisiky.com:3000). The `-be` backend host that
+// earlier builds used is no longer part of the private contract — using the
+// unified domain for EXPO_PUBLIC_API_URL means attachment downloads and all
+// API calls resolve against the frontend address, so the authenticated
+// download path works without a separate backend host.
+const apiUrl = "https://direct.multica.elvisiky.com:3000";
 const webUrl = "https://direct.multica.elvisiky.com:3000";
 const displayName = "multica";
 

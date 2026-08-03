@@ -2,6 +2,7 @@
   "back": "返回",
   "tabs": {
     "inbox": "收件箱",
+    "issues": "任务",
     "my_issues": "我的任务",
     "chat": "聊天",
     "more": "更多"
