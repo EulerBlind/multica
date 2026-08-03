@@ -66,11 +66,13 @@ export default ({ config }: ConfigContext): ExpoConfig => {
       // `EXPO_BUNDLE_IDENTIFIER` would leak across variants (Expo CLI
       // auto-loads `.env.<mode>.local` regardless of APP_ENV) and collapse
       // dev / staging / prod onto a single id.
-      bundleIdentifier: isProd
-        ? (process.env.EXPO_BUNDLE_IDENTIFIER_PROD ?? "ai.multica.mobile")
-        : isStaging
-          ? "ai.multica.mobile.staging"
-          : (process.env.EXPO_BUNDLE_IDENTIFIER_DEV ?? "ai.multica.mobile.dev"),
+      bundleIdentifier: isPrivate
+        ? (process.env.EXPO_BUNDLE_IDENTIFIER_PRIVATE ?? "ai.multica.mobile.privateapp")
+        : isProd
+          ? (process.env.EXPO_BUNDLE_IDENTIFIER_PROD ?? "ai.multica.mobile")
+          : isStaging
+            ? "ai.multica.mobile.staging"
+            : (process.env.EXPO_BUNDLE_IDENTIFIER_DEV ?? "ai.multica.mobile.dev"),
     },
     android: {
       package: androidPackage,

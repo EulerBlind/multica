@@ -18,6 +18,7 @@ describe("mobile app variants", () => {
     expect(privateConfig.name).toBe("multica");
     expect(privateConfig.scheme).toBe("multica-private");
     expect(privateConfig.android?.package).toBe("ai.multica.mobile.privateapp");
+    expect(privateConfig.ios?.bundleIdentifier).toBe("ai.multica.mobile.privateapp");
     expect(privateConfig.android?.permissions).toContain("android.permission.CAMERA");
     expect(privateConfig.android?.blockedPermissions).toContain(
       "android.permission.SYSTEM_ALERT_WINDOW",
@@ -28,6 +29,7 @@ describe("mobile app variants", () => {
       expect(config.name).not.toBe("Multica (Private)");
       expect(config.scheme).toBe("multica");
       expect(config.android?.package).not.toBe("ai.multica.mobile.privateapp");
+      expect(config.ios?.bundleIdentifier).not.toBe("ai.multica.mobile.privateapp");
     }
   });
 
