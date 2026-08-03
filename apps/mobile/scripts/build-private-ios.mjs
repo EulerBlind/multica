@@ -145,6 +145,10 @@ export function runPrivateIOSBuild({
     // Prebuild generates the ios/ native project from app.config.ts.
     run("pnpm", ["exec", "expo", "prebuild", "--platform", "ios", "--clean", "--no-install"]);
 
+    // `--no-install` skips pod install; the xcworkspace is produced by
+    // `pod install`, which xcodebuild needs for a workspace build.
+    run("pod", ["install"], { cwd: iosDir });
+
     if (signingMode === "sideload") {
       // Device archive path — requires a configured signing identity +
       // provisioning profile. Without one, xcodebuild archive fails.
