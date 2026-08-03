@@ -1,11 +1,11 @@
 /**
- * Header utility buttons shared across primary tabs (Inbox / My Issues).
+ * Header utility buttons shared across primary tabs (Inbox / Issues).
  * Provides two global actions on the right: search and create-issue.
  *
  * The workspace menu (global nav, workspace switcher, settings) is reached
  * via the "More" tab in the bottom bar.
  *
- * Tab-specific actions (e.g. My Issues filter) MUST NOT live here — they
+ * Tab-specific actions (e.g. the Issues filter) MUST NOT live here — they
  * mix scope levels with global actions and would clutter the strip.
  */
 import { router } from "expo-router";

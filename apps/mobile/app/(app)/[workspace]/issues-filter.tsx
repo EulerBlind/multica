@@ -1,6 +1,6 @@
 /**
  * Status + Priority filter sheet — presented as a formSheet by the parent
- * Stack. Shared by My Issues and the workspace-wide Issues page; which
+ * Stack. Shared by the workspace Issues tab and the filter sheet; which
  * view-store to read/write is selected by the `scope` URL param.
  *
  * Routes that open this sheet:

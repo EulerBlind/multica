@@ -86,11 +86,11 @@ export default function TabsLayout() {
           }}
         />
         <Tabs.Screen
-          name="my-issues"
+          name="issues"
           options={{
-            title: "My Issues",
+            title: "Issues",
             tabBarIcon: ({ color, size, focused }) => (
-              <PlatformNavIcon name="myIssues" color={color} size={size} focused={focused} />
+              <PlatformNavIcon name="issues" color={color} size={size} focused={focused} />
             ),
           }}
         />

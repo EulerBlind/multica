@@ -12,6 +12,8 @@
 import { useCallback, useMemo } from "react";
 import {
   ActivityIndicator,
+  Alert,
+  Pressable,
   RefreshControl,
   ScrollView,
   View,
@@ -23,6 +25,7 @@ import { Text } from "@/components/ui/text";
 import { Button } from "@/components/ui/button";
 import { ActorAvatar } from "@/components/ui/actor-avatar";
 import { ChatTimeline } from "@/components/chat/chat-timeline";
+import { useRerunTask } from "@/data/mutations/issues";
 import {
   issueActiveTasksOptions,
   issueTasksOptions,
@@ -41,6 +44,11 @@ const ACTIVE_STATUSES: readonly AgentTask["status"][] = [
   "dispatched",
   "running",
   "waiting_local_directory",
+];
+
+const RETRYABLE_STATUSES: readonly AgentTask["status"][] = [
+  "failed",
+  "cancelled",
 ];
 
 export default function IssueRunDetailRoute() {
@@ -143,6 +151,9 @@ export default function IssueRunDetailRoute() {
                   {task.failure_reason}
                 </Text>
               ) : null}
+              {RETRYABLE_STATUSES.includes(task.status) ? (
+                <RetryTaskButton issueId={issueId} taskId={task.id} />
+              ) : null}
             </View>
           </View>
 
@@ -199,6 +210,46 @@ function fallbackSummary(task: AgentTask): string {
     default:
       return "Task";
   }
+}
+
+/** Retry affordance on the run-detail screen — same mutation as the runs
+ *  list row (rerunIssue → POST /api/issues/:id/rerun with the source task
+ *  id). Shown for failed/cancelled runs so a user inspecting a failure can
+ *  re-fire the same agent without navigating back. */
+function RetryTaskButton({
+  issueId,
+  taskId,
+}: {
+  issueId: string;
+  taskId: string;
+}) {
+  const mutation = useRerunTask(issueId);
+
+  const onPress = () => {
+    if (mutation.isPending) return;
+    mutation.mutate(taskId, {
+      onError: (err) => {
+        Alert.alert(
+          "Retry failed",
+          err instanceof Error ? err.message : "Could not rerun this task.",
+        );
+      },
+    });
+  };
+
+  return (
+    <Pressable
+      onPress={onPress}
+      disabled={mutation.isPending}
+      accessibilityRole="button"
+      accessibilityLabel="Retry task"
+      className="self-start px-3 py-1.5 rounded-md bg-secondary active:opacity-70 mt-2"
+    >
+      <Text className="text-xs font-medium text-foreground">
+        {mutation.isPending ? "Retrying…" : "Retry"}
+      </Text>
+    </Pressable>
+  );
 }
 
 const STATUS_LABEL: Record<AgentTask["status"], string> = {

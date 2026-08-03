@@ -15,7 +15,7 @@ import type { AgentTask } from "@multica/core/types";
 import { router } from "expo-router";
 import { Text } from "@/components/ui/text";
 import { ActorAvatar } from "@/components/ui/actor-avatar";
-import { useCancelTask } from "@/data/mutations/issues";
+import { useCancelTask, useRerunTask } from "@/data/mutations/issues";
 import { useActorLookup } from "@/data/use-actor-name";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { runFailureBadgeLabel } from "@/lib/run-failure-badge";
@@ -32,10 +32,19 @@ const ACTIVE_STATUSES: readonly AgentTask["status"][] = [
   "running",
 ];
 
+// Failed and cancelled runs can be retried — mirrors web's execution-log
+// retry (packages/views/issues/components/execution-log-section.tsx
+// `canRetry = task.status === "failed" || task.status === "cancelled"`).
+const RETRYABLE_STATUSES: readonly AgentTask["status"][] = [
+  "failed",
+  "cancelled",
+];
+
 export function RunRow({ task, issueId }: Props) {
   const { getName } = useActorLookup();
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
   const isActive = ACTIVE_STATUSES.includes(task.status);
+  const canRetry = RETRYABLE_STATUSES.includes(task.status);
   const summary = task.trigger_summary?.trim() || fallbackSummary(task);
   const timestamp = task.completed_at || task.created_at;
 
@@ -69,7 +78,10 @@ export function RunRow({ task, issueId }: Props) {
           </View>
         </View>
       </Pressable>
-      {isActive ? <CancelButton taskId={task.id} issueId={issueId} /> : null}
+      <View className="flex-row items-center gap-2">
+        {canRetry ? <RetryButton taskId={task.id} issueId={issueId} /> : null}
+        {isActive ? <CancelButton taskId={task.id} issueId={issueId} /> : null}
+      </View>
     </View>
   );
 }
@@ -123,6 +135,49 @@ function CancelButton({
       className="px-3 py-1.5 rounded-md bg-secondary active:opacity-70"
     >
       <Text className="text-xs font-medium text-foreground">Cancel</Text>
+    </Pressable>
+  );
+}
+
+/**
+ * Retry a failed/cancelled agent run — fires the same mutation web's
+ * execution-log Retry button uses (`rerunIssue` → POST /api/issues/:id/rerun
+ * with the source task id). No confirmation dialog: web triggers the rerun
+ * directly on click, and the run-detail screen is one tap away if the user
+ * wants to inspect the previous failure first.
+ */
+function RetryButton({
+  taskId,
+  issueId,
+}: {
+  taskId: string;
+  issueId: string;
+}) {
+  const mutation = useRerunTask(issueId);
+
+  const onPress = () => {
+    if (mutation.isPending) return;
+    mutation.mutate(taskId, {
+      onError: (err) => {
+        Alert.alert(
+          "Retry failed",
+          err instanceof Error ? err.message : "Could not rerun this task.",
+        );
+      },
+    });
+  };
+
+  return (
+    <Pressable
+      onPress={onPress}
+      disabled={mutation.isPending}
+      accessibilityRole="button"
+      accessibilityLabel="Retry task"
+      className="px-3 py-1.5 rounded-md bg-secondary active:opacity-70"
+    >
+      <Text className="text-xs font-medium text-foreground">
+        {mutation.isPending ? "Retrying…" : "Retry"}
+      </Text>
     </Pressable>
   );
 }

@@ -168,4 +168,25 @@ describe("private Android APK publication", () => {
       [path.basename(fixture.finalApk), path.basename(fixture.provenance)].sort(),
     );
   });
+
+  it("uses one unified private domain for API and Web (QIA-393)", () => {
+    const fixture = createFixture();
+    const observed = {};
+    runPrivateAndroidBuild({
+      mobileDir: fixture.mobileDir,
+      env: fixture.env,
+      spawn: fakeSpawn(fixture, undefined, observed),
+      uniqueId: () => "test-build",
+      now: () => new Date("2026-07-13T14:00:00.000Z"),
+    });
+    // Provenance carries the private URLs that were injected into the
+    // prebuild + Gradle bundle env. QIA-393 requires server_url == app_url
+    // on the unified frontend domain — the `-be` backend host must not leak.
+    const provenance = JSON.parse(fs.readFileSync(fixture.provenance, "utf8"));
+    expect(provenance.privateUrls).toEqual([
+      "https://direct.multica.elvisiky.com:3000",
+      "https://direct.multica.elvisiky.com:3000",
+    ]);
+    expect(provenance.privateUrls.some((url) => url.includes("multica-be"))).toBe(false);
+  });
 });

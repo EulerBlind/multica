@@ -60,14 +60,16 @@ requireMatch(resources, /resource 0x[0-9a-f]+ mipmap\/ic_launcher_foreground\b/,
 requireMatch(resources, /resource 0x[0-9a-f]+ mipmap\/ic_launcher_monochrome\b/, "Android 13 monochrome icon resource is missing");
 
 const bundle = output("unzip", ["-p", apk, "assets/index.android.bundle"]);
+// QIA-393 private contract: the API and web app share one unified domain
+// (server_url == app_url). The bundle must contain that address and must not
+// leak the legacy `-be` backend host or the public production endpoints.
 const requiredUrls = [
-  "https://direct.multica-be.elvisiky.com:3000",
   "https://direct.multica.elvisiky.com:3000",
 ];
 for (const url of requiredUrls) {
   if (!bundle.includes(url)) throw new Error(`Private URL is missing from bundle: ${url}`);
 }
-for (const url of ["https://api.multica.ai", "https://multica.ai"]) {
+for (const url of ["https://api.multica.ai", "https://multica.ai", "https://direct.multica-be.elvisiky.com:3000"]) {
   if (bundle.includes(url)) throw new Error(`Public production URL leaked into private bundle: ${url}`);
 }
 

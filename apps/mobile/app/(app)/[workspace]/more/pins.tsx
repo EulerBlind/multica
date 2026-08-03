@@ -13,7 +13,7 @@
  * top comment.
  *
  * Rendering split by `item_type`:
- *   - issue → existing `<IssueRow>` (used by my-issues / more/issues /
+ *   - issue → existing `<IssueRow>` (used by (tabs)/issues /
  *     project-related-issues), `showStatus` because pins are heterogeneous
  *     (no section grouping by status).
  *   - project → existing `<ProjectRow>` (used by more/projects).
