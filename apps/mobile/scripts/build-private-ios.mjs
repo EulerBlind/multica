@@ -168,8 +168,9 @@ export function runPrivateIOSBuild({
       throw new Error("sideload archive produced without signing; expected a signing identity. Use simulator mode unless a device build is explicitly required.");
     }
 
-    // Simulator path — no signing required. Build the .app into the
-    // derived data dir, then stage a copy into dist/.
+    // Simulator path — no signing required. Build a Release .app so the JS
+    // bundle is embedded (Debug builds set SKIP_BUNDLING=1 and would require
+    // a Metro server at runtime).
     const derivedData = path.join(mobileDir, "dist", ".ios-derived-data");
     fs.mkdirSync(derivedData, { recursive: true });
     // Private app display name is "multica" (app.config.ts isPrivate branch),
@@ -184,7 +185,7 @@ export function runPrivateIOSBuild({
       [
         "-workspace", workspace,
         "-scheme", "multica",
-        "-configuration", "Debug",
+        "-configuration", "Release",
         "-destination", "generic/platform=iOS Simulator",
         "-derivedDataPath", derivedData,
         "CODE_SIGNING_ALLOWED=NO",
@@ -193,7 +194,7 @@ export function runPrivateIOSBuild({
       { cwd: iosDir },
     );
 
-    const builtApp = path.join(derivedData, "Build", "Products", "Debug-iphonesimulator", "multica.app");
+    const builtApp = path.join(derivedData, "Build", "Products", "Release-iphonesimulator", "multica.app");
     if (!fs.existsSync(builtApp)) {
       throw new Error(`Simulator build succeeded without producing ${builtApp}`);
     }
@@ -224,7 +225,7 @@ export function runPrivateIOSBuild({
       displayName,
       signingMode,
       platform: "ios-simulator",
-      apkSha256: sha256Dir(stagedApp),
+      appSha256: sha256Dir(stagedApp),
       appFile: finalAppName,
       privateUrls: [apiUrl, webUrl],
       verified: true,
