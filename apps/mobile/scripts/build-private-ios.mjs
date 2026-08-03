@@ -12,10 +12,6 @@ const apiUrl = "https://direct.multica.elvisiky.com:3000";
 const webUrl = "https://direct.multica.elvisiky.com:3000";
 const displayName = "multica";
 
-function sha256(file) {
-  return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
-}
-
 function removeFiles(files) {
   let firstError;
   for (const file of files) {
