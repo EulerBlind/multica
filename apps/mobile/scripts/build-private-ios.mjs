@@ -155,8 +155,8 @@ export function runPrivateIOSBuild({
       run(
         "xcodebuild",
         [
-          "-workspace", path.join(iosDir, "multica-mobile.xcworkspace"),
-          "-scheme", "multica-mobile",
+          "-workspace", path.join(iosDir, "multica.xcworkspace"),
+          "-scheme", "multica",
           "-configuration", "Release",
           "-destination", "generic/platform=iOS",
           "-archivePath", path.join(distDir, "multica-private.xcarchive"),
@@ -172,11 +172,18 @@ export function runPrivateIOSBuild({
     // derived data dir, then stage a copy into dist/.
     const derivedData = path.join(mobileDir, "dist", ".ios-derived-data");
     fs.mkdirSync(derivedData, { recursive: true });
+    // Private app display name is "multica" (app.config.ts isPrivate branch),
+    // so the generated Xcode project/workspace is `multica` not
+    // `multica-mobile`.
+    const workspace = path.join(iosDir, "multica.xcworkspace");
+    if (!fs.existsSync(workspace)) {
+      throw new Error(`Expected workspace not found: ${workspace}`);
+    }
     run(
       "xcodebuild",
       [
-        "-workspace", path.join(iosDir, "multica-mobile.xcworkspace"),
-        "-scheme", "multica-mobile",
+        "-workspace", workspace,
+        "-scheme", "multica",
         "-configuration", "Debug",
         "-destination", "generic/platform=iOS Simulator",
         "-derivedDataPath", derivedData,
@@ -186,7 +193,7 @@ export function runPrivateIOSBuild({
       { cwd: iosDir },
     );
 
-    const builtApp = path.join(derivedData, "Build", "Products", "Debug-iphonesimulator", "multica-mobile.app");
+    const builtApp = path.join(derivedData, "Build", "Products", "Debug-iphonesimulator", "multica.app");
     if (!fs.existsSync(builtApp)) {
       throw new Error(`Simulator build succeeded without producing ${builtApp}`);
     }
