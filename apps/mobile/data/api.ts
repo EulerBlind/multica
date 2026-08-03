@@ -1226,6 +1226,19 @@ class ApiClient {
     await this.fetch<void>(`/api/tasks/${taskId}/cancel`, { method: "POST" });
   }
 
+  /** Manually re-enqueue an agent run for the issue. Mirrors web
+   *  `packages/core/api/client.ts` `rerunIssue` — when `taskId` is set the
+   *  rerun targets the agent that ran that specific past task (so clicking
+   *  Retry on a failed/cancelled execution-log row re-fires the same agent),
+   *  otherwise it targets the issue's current assignee. The new task is
+   *  flagged `force_fresh_session=true` server-side. */
+  async rerunIssue(issueId: string, taskId?: string): Promise<AgentTask> {
+    return this.fetch<AgentTask>(`/api/issues/${issueId}/rerun`, {
+      method: "POST",
+      body: JSON.stringify(taskId ? { task_id: taskId } : {}),
+    });
+  }
+
   /** Live execution timeline for a task — used by the chat screen to
    *  render the "thinking → tool_use → tool_result → final text" trace
    *  beneath an in-flight assistant bubble. `task:message` WS events

@@ -1,5 +1,5 @@
 /**
- * Workspace-wide Issues page. Mirrors web `packages/views/issues/components/
+ * Workspace-wide Issues tab. Mirrors web `packages/views/issues/components/
  * issues-page.tsx:32-94`: fetch every issue in the workspace, expose
  * `all / members / agents` scope tabs, group by status, allow status +
  * priority filtering.
@@ -9,12 +9,10 @@
  * scoped (no scope param on the wire), so `issueKeys.list(wsId)` and
  * `useIssuesRealtime` need no changes.
  *
- * Differences vs My Issues (`(tabs)/my-issues.tsx`):
- *   - Workspace-wide list (all issues), not user-scoped.
- *   - Three scopes are `all / members / agents` (assignee_type pre-filter),
- *     not `assigned / created / agents` (per-user predicates).
- *   - Independent filter store (`useIssuesViewStore`) so workspace-level
- *     filters don't bleed into the per-user view.
+ * This tab replaced the former per-user "My Issues" tab (the workspace-wide
+ * list was previously reached via More → Issues). Scopes are
+ * `all / members / agents` (assignee_type pre-filter), not the per-user
+ * `assigned / created / agents` predicates.
  *
  * Filters beyond status/priority (assignee / project / label / creator)
  * are deferred — power-user features with non-trivial picker cost; ship
@@ -32,10 +30,8 @@ import type {
 } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
 import { Button } from "@/components/ui/button";
-// Header chrome (back + "Issues" title) comes from the parent Stack
-// (`apps/mobile/app/(app)/[workspace]/_layout.tsx:269`). The Filter
-// affordance now lives in <ScopeToolbar> below, matching web's
-// IssuesHeader pattern (scope + filter share a row).
+import { Header } from "@/components/ui/header";
+import { HeaderActions } from "@/components/ui/app-header-actions";
 import { StatusIcon } from "@/components/ui/status-icon";
 import { IssueRow } from "@/components/issue/issue-row";
 import { IssuesLoading } from "@/components/issue/issues-loading";
@@ -124,6 +120,7 @@ export default function IssuesPage() {
 
   return (
     <View className="flex-1 bg-background">
+      <Header title="Issues" right={<HeaderActions />} />
       <ScopeToolbar
         scopes={SCOPES}
         scope={scope}

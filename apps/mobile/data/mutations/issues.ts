@@ -767,3 +767,27 @@ export function useCancelTask(issueId: string) {
     },
   });
 }
+
+/**
+ * Retry a failed/cancelled agent run. Mirrors web's execution-log retry
+ * (packages/views/issues/components/execution-log-section.tsx `handleRetry`):
+ * POST /api/issues/:id/rerun with the source task id. The rerun targets the
+ * agent that ran that specific task, so clicking Retry on a past failed row
+ * re-fires the same agent rather than the issue's current assignee.
+ *
+ * Cache: no optimistic patch — the server mints a new queued task and the WS
+ * `task:queued` event invalidates the active-tasks cache. We invalidate both
+ * task caches on settle so a late-arriving WS event can't leave a stale row.
+ */
+export function useRerunTask(issueId: string) {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
+
+  return useMutation({
+    mutationFn: (taskId: string) => api.rerunIssue(issueId, taskId),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: issueKeys.activeTasks(wsId, issueId) });
+      qc.invalidateQueries({ queryKey: issueKeys.tasks(wsId, issueId) });
+    },
+  });
+}

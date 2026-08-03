@@ -23,7 +23,7 @@
  * user keeps the "this thread is resolved" signal even while reading.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Pressable, View } from "react-native";
+import { Pressable, View, Alert } from "react-native";
 import Animated, {
   useAnimatedStyle,
   useSharedValue,
@@ -43,6 +43,7 @@ import { CommentAttachmentList } from "@/components/issue/comment-attachment-lis
 import {
   discardFailedComment,
   useCreateComment,
+  useRerunTask,
   useToggleCommentReaction,
 } from "@/data/mutations/issues";
 import { useAuthStore } from "@/data/auth-store";
@@ -515,6 +516,11 @@ function CommentBody({
           onRetry={handleRetry}
           onDiscard={handleDiscard}
         />
+      ) : retryableAgentFailureComment(entry) ? (
+        <AgentTaskRetryButton
+          issueId={issueId}
+          taskId={entry.source_task_id}
+        />
       ) : (
         <ReactionBar
           reactions={reactions}
@@ -580,5 +586,64 @@ function FailedActions({
         </Text>
       </Pressable>
     </View>
+  );
+}
+
+/**
+ * Agent system failure comment with a source task id — mirrors web's
+ * `retryableAgentFailureComment` predicate
+ * (packages/views/issues/components/comment-card.tsx:253). These rows are
+ * the timeline's surface for a failed/cancelled agent run; web renders a
+ * Retry button beneath them that re-fires the same task.
+ */
+function retryableAgentFailureComment(
+  entry: TimelineEntry,
+): entry is TimelineEntry & { source_task_id: string } {
+  return (
+    entry.actor_type === "agent" &&
+    entry.comment_type === "system" &&
+    typeof entry.source_task_id === "string" &&
+    entry.source_task_id.length > 0
+  );
+}
+
+/** Retry button beneath an agent system failure comment — same mutation as
+ *  the runs list (`rerunIssue`). Mirrors web's TaskCommentRetryButton. */
+function AgentTaskRetryButton({
+  issueId,
+  taskId,
+}: {
+  issueId: string;
+  taskId: string;
+}) {
+  const mutation = useRerunTask(issueId);
+  const { colorScheme } = useColorScheme();
+  const fg = THEME[colorScheme].foreground;
+
+  const onPress = () => {
+    if (mutation.isPending) return;
+    mutation.mutate(taskId, {
+      onError: (err) => {
+        Alert.alert(
+          "Retry failed",
+          err instanceof Error ? err.message : "Could not rerun this task.",
+        );
+      },
+    });
+  };
+
+  return (
+    <Pressable
+      onPress={onPress}
+      disabled={mutation.isPending}
+      accessibilityRole="button"
+      accessibilityLabel="Retry task"
+      className="self-start flex-row items-center gap-1.5 px-3 py-1.5 rounded-md bg-secondary active:opacity-70 mt-0.5"
+    >
+      <Ionicons name="refresh" size={14} color={fg} />
+      <Text className="text-xs font-medium text-foreground">
+        {mutation.isPending ? "Retrying…" : "Retry"}
+      </Text>
+    </Pressable>
   );
 }
