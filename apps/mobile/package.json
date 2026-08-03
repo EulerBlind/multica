@@ -16,6 +16,7 @@
     "ios:device:prod": "dotenv -e .env.production -- cross-env APP_ENV=production ./scripts/ios-run.sh --device",
     "ios:device:prod:release": "dotenv -e .env.production -- cross-env APP_ENV=production ./scripts/ios-run.sh --device --configuration Release",
     "android:private:apk": "node scripts/build-private-android.mjs",
+    "ios:private:sim": "node scripts/build-private-ios.mjs",
     "lint": "expo lint",
     "typecheck": "tsc --noEmit",
     "test": "vitest run && bash scripts/ios-run.test.sh"
