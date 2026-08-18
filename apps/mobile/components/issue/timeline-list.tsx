@@ -270,6 +270,20 @@ export function TimelineList({
     setNewCount(0);
   }, []);
 
+  // ── Quick jump to top / bottom ────────────────────────────────────────
+  // For conversations with many comments, dragging to reach the start or
+  // end is tedious. Two floating buttons (▲ top / ▼ bottom) at the right
+  // edge give a one-tap shortcut — mirrors iMessage / Slack long-thread
+  // affordances.
+  const onJumpToTop = useCallback(() => {
+    listRef.current?.scrollToOffset({ offset: 0, animated: true });
+  }, []);
+
+  const onJumpToBottom = useCallback(() => {
+    listRef.current?.scrollToEnd({ animated: true });
+    setNewCount(0);
+  }, []);
+
   // ── Inject divider as a sentinel row before its anchor entry ──────────
   // FlatList wants a flat data[] and a stable key per row. Rather than
   // teach the renderer about "items + dividers" via a union type, fake a
@@ -477,8 +491,67 @@ export function TimelineList({
       {newCount > 0 ? (
         <NewCommentChip count={newCount} onPress={onJumpToNew} />
       ) : null}
+      <ScrollJumpButtons onTop={onJumpToTop} onBottom={onJumpToBottom} />
     </View>
     </ImageSequenceProvider>
+  );
+}
+
+/**
+ * Floating vertical pair of quick-scroll buttons (▲ top / ▼ bottom) pinned
+ * to the right edge just above the composer. Always rendered so the
+ * affordance is discoverable; the bottom button also clears the unread-new
+ * chip when it doubles as "jump to latest".
+ */
+function ScrollJumpButtons({
+  onTop,
+  onBottom,
+}: {
+  onTop: () => void;
+  onBottom: () => void;
+}) {
+  const { colorScheme } = useColorScheme();
+  const theme = THEME[colorScheme];
+  const base =
+    "size-9 items-center justify-center rounded-full bg-secondary/90 active:opacity-70 border border-border";
+  return (
+    <View
+      pointerEvents="box-none"
+      className="absolute right-3 bottom-6 gap-2"
+    >
+      <Pressable
+        onPress={onTop}
+        hitSlop={6}
+        className={base}
+        accessibilityRole="button"
+        accessibilityLabel="Jump to top"
+        style={{
+          shadowColor: "#000",
+          shadowOffset: { width: 0, height: 2 },
+          shadowOpacity: 0.15,
+          shadowRadius: 4,
+          elevation: 3,
+        }}
+      >
+        <Ionicons name="chevron-up" size={18} color={theme.foreground} />
+      </Pressable>
+      <Pressable
+        onPress={onBottom}
+        hitSlop={6}
+        className={base}
+        accessibilityRole="button"
+        accessibilityLabel="Jump to bottom"
+        style={{
+          shadowColor: "#000",
+          shadowOffset: { width: 0, height: 2 },
+          shadowOpacity: 0.15,
+          shadowRadius: 4,
+          elevation: 3,
+        }}
+      >
+        <Ionicons name="chevron-down" size={18} color={theme.foreground} />
+      </Pressable>
+    </View>
   );
 }
 

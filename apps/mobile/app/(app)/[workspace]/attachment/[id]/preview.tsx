@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Platform,
@@ -9,6 +9,7 @@ import {
 import { Stack, useLocalSearchParams } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useQuery } from "@tanstack/react-query";
+import { WebView } from "react-native-webview";
 import {
   PreviewTooLargeError,
   PreviewUnsupportedError,
@@ -21,10 +22,7 @@ import { useWorkspaceStore } from "@/data/workspace-store";
 import { Button } from "@/components/ui/button";
 import { Text } from "@/components/ui/text";
 import { Markdown } from "@/lib/markdown";
-import {
-  getAttachmentPreviewKind,
-  htmlToStaticText,
-} from "@/lib/attachment-preview";
+import { getAttachmentPreviewKind } from "@/lib/attachment-preview";
 import { downloadAndOpenAttachment } from "@/lib/download-attachment";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { THEME } from "@/lib/theme";
@@ -130,30 +128,47 @@ function PreviewBody({
   const { colorScheme } = useColorScheme();
   const theme = THEME[colorScheme];
 
+  // Allow only the initial document load; any navigation from inside the
+  // document (link taps, meta refresh, window.location) is blocked —
+  // mirrors web's `sandbox="allow-scripts"` (no allow-top-navigation).
+  const initialLoadDone = useRef(false);
+  const blockNavigation = useCallback(() => {
+    if (!initialLoadDone.current) {
+      initialLoadDone.current = true;
+      return true;
+    }
+    return false;
+  }, []);
+
   if (kind === "html") {
-    const staticText = htmlToStaticText(text);
     return (
-      <ScrollView
-        showsVerticalScrollIndicator={false}
-        contentContainerStyle={{ padding: 16 }}
-      >
-        <View className="gap-3">
+      <View className="flex-1">
+        <View className="px-4 py-2">
           <Text className="text-xs text-muted-foreground">
-            Static HTML preview. Scripts, links, frames, and remote resources
-            are disabled.
-          </Text>
-          <Text
-            selectable
-            style={{
-              color: theme.foreground,
-              fontSize: 14,
-              lineHeight: 22,
-            }}
-          >
-            {staticText || "No readable text content."}
+            HTML document preview. Rendered in an isolated context; remote
+            navigation and app access are blocked.
           </Text>
         </View>
-      </ScrollView>
+        <WebView
+          style={{ flex: 1, backgroundColor: theme.background }}
+          originWhitelist={["*"]}
+          // Render the HTML source directly with an opaque origin (matching
+          // web's `sandbox="allow-scripts"` iframe posture). Scripts may run
+          // for document fidelity, but the page cannot reach cookies,
+          // storage, the app, or navigate away.
+          source={{ html: text, baseUrl: "about:blank" }}
+          javaScriptEnabled
+          domStorageEnabled={false}
+          // Links inside uploaded documents shouldn't navigate the app —
+          // keep every request inside the WebView; external pages won't load
+          // because baseUrl is opaque (about:blank).
+          setSupportMultipleWindows={false}
+          allowsBackForwardNavigationGestures={false}
+          overScrollMode="never"
+          startInLoadingState
+          onShouldStartLoadWithRequest={blockNavigation}
+        />
+      </View>
     );
   }
 

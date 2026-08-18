@@ -15,7 +15,7 @@
  * Filter state lives in `useMyIssuesViewStore` and is cleared on workspace
  * change via the shared `useClearFiltersOnWorkspaceChange` hook.
  */
-import { useMemo } from "react";
+import { useCallback, useMemo } from "react";
 import { Pressable, SectionList, View } from "react-native";
 import { useQuery } from "@tanstack/react-query";
 import { Stack, router } from "expo-router";
@@ -23,6 +23,7 @@ import { Ionicons } from "@expo/vector-icons";
 import type { Issue, IssuePriority, IssueStatus } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
 import { Button } from "@/components/ui/button";
+import { IconButton } from "@/components/ui/icon-button";
 import { StatusIcon } from "@/components/ui/status-icon";
 import { IssueRow } from "@/components/issue/issue-row";
 import { IssuesLoading } from "@/components/issue/issues-loading";

@@ -16,11 +16,10 @@
  * the user can immediately add a lead / attach issues / configure properties.
  */
 import { useCallback, useState } from "react";
+import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import {
   Alert,
   InteractionManager,
-  KeyboardAvoidingView,
-  Platform,
   Pressable,
   ScrollView,
   TextInput,
@@ -178,7 +177,7 @@ export default function NewProject() {
       <Stack.Screen options={{ headerLeft, headerRight }} />
       <KeyboardAvoidingView
         className="flex-1 bg-background"
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        behavior="padding"
       >
         <ScrollView
           className="flex-1"

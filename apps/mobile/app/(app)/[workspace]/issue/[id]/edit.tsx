@@ -19,10 +19,9 @@
  * This screen only owns the two free-text fields.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import {
   Alert,
-  KeyboardAvoidingView,
-  Platform,
   Pressable,
   ScrollView,
   TextInput,
@@ -151,7 +150,7 @@ export default function EditIssue() {
       <Stack.Screen options={{ headerLeft, headerRight }} />
       <KeyboardAvoidingView
         className="flex-1 bg-background"
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        behavior="padding"
       >
         <ScrollView
           className="flex-1"

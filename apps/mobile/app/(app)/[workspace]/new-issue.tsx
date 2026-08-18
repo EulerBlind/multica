@@ -14,10 +14,9 @@
  * recognised by util.ParseMentions on the server.
  */
 import { useCallback, useEffect, useState } from "react";
+import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import {
   Alert,
-  KeyboardAvoidingView,
-  Platform,
   ScrollView,
   TextInput,
   View,
@@ -128,7 +127,7 @@ export default function NewIssueModal() {
       <Stack.Screen options={{ headerRight }} />
       <KeyboardAvoidingView
         className="flex-1 bg-background"
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        behavior="padding"
       >
         <ScrollView
           className="flex-1"
