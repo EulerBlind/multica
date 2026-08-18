@@ -32,6 +32,7 @@ import {
 
 export default function Inbox() {
   const showActionSheet = useActionSheet();
+  const { t } = useT("inbox");
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
   const { colorScheme } = useColorScheme();
@@ -68,40 +69,51 @@ export default function Inbox() {
   // first (most common batch op); "Archive all" is destructive so it gets
   // the iOS red treatment + Alert confirm.
   const onPressMenu = () => {
-    const options = [
-      t("common:actions.cancel"),
-      t("actions.mark_all_read"),
-      t("actions.archive_all_read"),
-      t("actions.archive_completed"),
-      t("actions.archive_all"),
-    ];
-    ActionSheetIOS.showActionSheetWithOptions(
-      {
-        options,
-        cancelButtonIndex: 0,
-        destructiveButtonIndex: 4,
-        title: t("title"),
-      },
-      (i) => {
-        if (i === 1) markAllRead.mutate();
-        else if (i === 2) archiveAllRead.mutate();
-        else if (i === 3) archiveCompleted.mutate();
-        else if (i === 4) {
-          Alert.alert(
-            t("archive.confirm_title"),
-            t("archive.confirm_body"),
-            [
-              { text: t("common:actions.cancel"), style: "cancel" },
-              {
-                text: t("actions.archive_all"),
-                style: "destructive",
-                onPress: () => archiveAll.mutate(),
-              },
-            ],
-          );
-        }
-      },
-    );
+    showActionSheet({
+      title: t("title"),
+      items: [
+        {
+          key: "cancel",
+          label: t("common:actions.cancel"),
+          role: "cancel",
+          onPress: () => {},
+        },
+        {
+          key: "read",
+          label: t("actions.mark_all_read"),
+          onPress: () => markAllRead.mutate(),
+        },
+        {
+          key: "archive-read",
+          label: t("actions.archive_all_read"),
+          onPress: () => archiveAllRead.mutate(),
+        },
+        {
+          key: "archive-completed",
+          label: t("actions.archive_completed"),
+          onPress: () => archiveCompleted.mutate(),
+        },
+        {
+          key: "archive-all",
+          label: t("actions.archive_all"),
+          role: "destructive",
+          onPress: () => {
+            Alert.alert(
+              t("archive.confirm_title"),
+              t("archive.confirm_body"),
+              [
+                { text: t("common:actions.cancel"), style: "cancel" },
+                {
+                  text: t("actions.archive_all"),
+                  style: "destructive",
+                  onPress: () => archiveAll.mutate(),
+                },
+              ],
+            );
+          },
+        },
+      ],
+    });
   };
 
   return (

@@ -121,57 +121,61 @@ export default function IssueDetail() {
     const issueLink = webUrl
       ? `${webUrl}/${wsSlug}/issue/${issue.identifier}`
       : null;
-    const actions = ["cancel", "pin"];
-    if (isPinned) actions[1] = "unpin";
-    actions.push("edit");
-    if (issueLink) actions.push("copy_link");
-    if (issueLink) actions.push("open_web");
-    actions.push("delete");
-    const options = actions.map((action) =>
-      action === "cancel"
-        ? t("common:actions.cancel")
-        : action === "pin"
-          ? t("menu.pin")
-          : action === "unpin"
-            ? t("menu.unpin")
-            : action === "edit"
-              ? t("menu.edit_details")
-              : action === "copy_link"
-                ? t("menu.copy_link")
-                : action === "open_web"
-                  ? t("menu.open_web")
-                  : t("menu.delete_issue"),
-    );
-    const destructiveIndex = options.length - 1;
-    ActionSheetIOS.showActionSheetWithOptions(
-      {
-        options,
-        cancelButtonIndex: 0,
-        destructiveButtonIndex: destructiveIndex,
-        title: issue.identifier,
-      },
-      (i) => {
-        const action = actions[i];
-        if (action === "pin") {
-          createPin.mutate({ item_type: "issue", item_id: issue.id });
-        } else if (action === "unpin") {
-          deletePin.mutate({ itemType: "issue", itemId: issue.id });
-        } else if (action === "edit") {
-          if (wsSlug) router.push(`/${wsSlug}/issue/${issue.id}/edit`);
-        } else if (action === "copy_link" && issueLink) {
-          Clipboard.setStringAsync(issueLink);
-        } else if (action === "open_web" && issueLink) {
-          Linking.openURL(issueLink);
-        } else if (action === "delete") {
-          confirmDelete(issue, t, () =>
-            deleteIssue.mutate(issue.id, {
-              onSuccess: () => router.back(),
-            }),
-          );
-        }
-      },
-    );
-  }, [issue, wsSlug, deleteIssue, isPinned, createPin, deletePin, t]);
+    showActionSheet({
+      title: issue.identifier,
+      items: [
+        {
+          key: "cancel",
+          label: t("common:actions.cancel"),
+          role: "cancel",
+          onPress: () => {},
+        },
+        {
+          key: "pin",
+          label: isPinned ? t("menu.unpin") : t("menu.pin"),
+          onPress: () => {
+            if (isPinned) {
+              deletePin.mutate({ itemType: "issue", itemId: issue.id });
+            } else {
+              createPin.mutate({ item_type: "issue", item_id: issue.id });
+            }
+          },
+        },
+        {
+          key: "edit",
+          label: t("menu.edit_details"),
+          onPress: () => {
+            if (wsSlug) router.push(`/${wsSlug}/issue/${issue.id}/edit`);
+          },
+        },
+        ...(issueLink
+          ? [
+              {
+                key: "copy_link",
+                label: t("menu.copy_link"),
+                onPress: () => void Clipboard.setStringAsync(issueLink),
+              },
+              {
+                key: "open_web",
+                label: t("menu.open_web"),
+                onPress: () => void Linking.openURL(issueLink),
+              },
+            ]
+          : []),
+        {
+          key: "delete",
+          label: t("menu.delete_issue"),
+          role: "destructive" as const,
+          onPress: () =>
+            confirmDelete(issue, t, () =>
+              deleteIssue.mutate(issue.id, {
+                onSuccess: () => router.back(),
+              }),
+            ),
+        },
+      ],
+    });
+  }, [issue, wsSlug, deleteIssue, isPinned, createPin, deletePin, t, showActionSheet]);
 
   return (
     <View className="flex-1 bg-background">

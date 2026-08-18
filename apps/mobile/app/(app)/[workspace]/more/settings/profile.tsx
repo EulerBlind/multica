@@ -62,35 +62,36 @@ export default function ProfileSettingsScreen() {
   const dirty = name.trim() !== (user?.name ?? "") && name.trim().length > 0;
 
   const handleAvatarPick = () => {
-    const actions = ["camera", "library"];
-    if (user?.avatar_url) actions.push("remove");
-    actions.push("cancel");
-    const removeIndex = user?.avatar_url ? 2 : -1;
-    const cancelIndex = actions.length - 1;
-    const visibleOptions = actions.map((action) =>
-      action === "camera"
-        ? t("avatar.take")
-        : action === "library"
-          ? t("avatar.library")
-          : action === "remove"
-            ? t("avatar.remove")
-            : t("common:actions.cancel"),
-    );
-
-    ActionSheetIOS.showActionSheetWithOptions(
-      {
-        options: visibleOptions,
-        cancelButtonIndex: cancelIndex,
-        destructiveButtonIndex: removeIndex >= 0 ? removeIndex : undefined,
-      },
-      async (index) => {
-        if (index === cancelIndex) return;
-        const action = actions[index];
-        if (action === "camera") await pickFromCamera();
-        else if (action === "library") await pickFromLibrary();
-        else if (action === "remove") await removeAvatar();
-      },
-    );
+    showActionSheet({
+      items: [
+        {
+          key: "camera",
+          label: t("avatar.take"),
+          onPress: () => void pickFromCamera(),
+        },
+        {
+          key: "library",
+          label: t("avatar.library"),
+          onPress: () => void pickFromLibrary(),
+        },
+        ...(user?.avatar_url
+          ? [
+              {
+                key: "remove",
+                label: t("avatar.remove"),
+                role: "destructive" as const,
+                onPress: () => void removeAvatar(),
+              },
+            ]
+          : []),
+        {
+          key: "cancel",
+          label: t("common:actions.cancel"),
+          role: "cancel",
+          onPress: () => {},
+        },
+      ],
+    });
   };
 
   const pickFromCamera = async () => {

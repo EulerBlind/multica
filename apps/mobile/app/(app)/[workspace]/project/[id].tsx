@@ -90,52 +90,50 @@ export default function ProjectDetail() {
   const onPressMore = () => {
     if (!project) return;
     const wsUrl = process.env.EXPO_PUBLIC_WEB_URL;
-    const actions = ["cancel", isPinned ? "unpin" : "pin", "edit"];
-    if (wsUrl) actions.push("open_web");
-    actions.push("delete");
-    const options = actions.map((action) =>
-      action === "cancel"
-        ? t("common:actions.cancel")
-        : action === "pin"
-          ? t("menu.pin")
-          : action === "unpin"
-            ? t("menu.unpin")
-            : action === "edit"
-              ? t("menu.edit_details")
-              : action === "open_web"
-                ? t("menu.open_web")
-                : t("common:actions.delete"),
-    );
-    const destructiveIndex = options.length - 1;
-    ActionSheetIOS.showActionSheetWithOptions(
-      {
-        options,
-        cancelButtonIndex: 0,
-        destructiveButtonIndex: destructiveIndex,
-      },
-      (i) => {
-        const action = actions[i];
-        if (action === "pin") {
-          createPin.mutate({ item_type: "project", item_id: project.id });
-          return;
-        }
-        if (action === "unpin") {
-          deletePin.mutate({ itemType: "project", itemId: project.id });
-          return;
-        }
-        if (action === "edit") {
-          if (wsSlug) router.push(`/${wsSlug}/project/${id}/edit`);
-          return;
-        }
-        if (action === "open_web" && wsUrl) {
-          Linking.openURL(`${wsUrl}/${wsSlug}/projects/${id}`);
-          return;
-        }
-        if (i === destructiveIndex) {
-          onDelete();
-        }
-      },
-    );
+    showActionSheet({
+      items: [
+        {
+          key: "cancel",
+          label: t("common:actions.cancel"),
+          role: "cancel",
+          onPress: () => {},
+        },
+        {
+          key: "pin",
+          label: isPinned ? t("menu.unpin") : t("menu.pin"),
+          onPress: () => {
+            if (isPinned) {
+              deletePin.mutate({ itemType: "project", itemId: project.id });
+            } else {
+              createPin.mutate({ item_type: "project", item_id: project.id });
+            }
+          },
+        },
+        {
+          key: "edit",
+          label: t("menu.edit_details"),
+          onPress: () => {
+            if (wsSlug) router.push(`/${wsSlug}/project/${id}/edit`);
+          },
+        },
+        ...(wsUrl
+          ? [
+              {
+                key: "open_web",
+                label: t("menu.open_web"),
+                onPress: () =>
+                  void Linking.openURL(`${wsUrl}/${wsSlug}/projects/${id}`),
+              },
+            ]
+          : []),
+        {
+          key: "delete",
+          label: t("common:actions.delete"),
+          role: "destructive" as const,
+          onPress: onDelete,
+        },
+      ],
+    });
   };
 
   const onDelete = () => {
