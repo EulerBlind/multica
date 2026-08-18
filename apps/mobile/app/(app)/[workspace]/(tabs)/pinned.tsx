@@ -2,19 +2,17 @@
  * Pinned home tab — the mobile main screen.
  *
  * Replaces the former workspace-wide "Issues" tab (QIA-393) per the mobile
- * UI rework: the primary tab is now "Pinned", and the workspace's issues
- * remain visible on the main screen as a 5-item preview section.
+ * UI rework: the primary tab is "Pinned" and shows ONLY the user's pinned
+ * issues/projects (up to 5 rows). The workspace-wide Issues list moved to
+ * its own first-level tab, and My Issues lives in the More popover.
  *
- * Layout (top → bottom):
- *   1. "Pinned" — the user's pinned issues/projects (up to 5), reusing the
- *      same row rendering as more/pins.tsx. "See all" pushes the full
- *      Pinned list (/more/pins).
- *   2. "Issues" — the 5 most recently updated workspace issues.
- *      "See all" pushes the full workspace Issues screen (/issues).
+ * Layout: "Pinned" section — the user's pinned issues/projects (up to 5),
+ * reusing the same row rendering as more/pins.tsx. "See all" pushes the
+ * full Pinned list (/more/pins).
  *
- * Data sources are the same queries the pushed screens use
- * (`pinListOptions` / `issueListOptions`), so realtime updates keep this
- * preview fresh with no extra wiring.
+ * Data source is the same query the pushed Pinned screen uses
+ * (`pinListOptions`), so realtime updates keep this preview fresh with no
+ * extra wiring.
  */
 import { useMemo } from "react";
 import {
@@ -34,15 +32,15 @@ import { HeaderActions } from "@/components/ui/app-header-actions";
 import { IssueRow } from "@/components/issue/issue-row";
 import { ProjectRow } from "@/components/project/project-row";
 import { pinListOptions } from "@/data/queries/pins";
-import { issueListOptions, issueDetailOptions } from "@/data/queries/issues";
+import { issueDetailOptions } from "@/data/queries/issues";
 import { projectDetailOptions } from "@/data/queries/projects";
 import { useAuthStore } from "@/data/auth-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { THEME } from "@/lib/theme";
 
-/** Preview cap for both sections on the main screen. */
-const HOME_SECTION_LIMIT = 5;
+/** Preview cap for the pinned section on the main screen. */
+const HOME_PIN_LIMIT = 5;
 
 export default function PinnedHomePage() {
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
@@ -51,35 +49,16 @@ export default function PinnedHomePage() {
   const { colorScheme } = useColorScheme();
 
   const pinsQuery = useQuery(pinListOptions(wsId, userId));
-  const issuesQuery = useQuery(issueListOptions(wsId));
 
   const pins = useMemo(() => {
     const sorted = [...(pinsQuery.data ?? [])].sort(
       (a, b) => a.position - b.position,
     );
-    return sorted.slice(0, HOME_SECTION_LIMIT);
+    return sorted.slice(0, HOME_PIN_LIMIT);
   }, [pinsQuery.data]);
 
-  // 5 most recently updated live issues (cancelled still shown — the full
-  // screen groups by BOARD_STATUSES; the preview just wants the freshest).
-  const previewIssues = useMemo(() => {
-    const live = (issuesQuery.data ?? []).filter(
-      (i) => i.status !== "cancelled",
-    );
-    return [...live]
-      .sort(
-        (a, b) =>
-          new Date(b.updated_at ?? "").getTime() -
-          new Date(a.updated_at ?? "").getTime(),
-      )
-      .slice(0, HOME_SECTION_LIMIT);
-  }, [issuesQuery.data]);
-
-  const loading =
-    (pinsQuery.isLoading && pinsQuery.data === undefined) ||
-    (issuesQuery.isLoading && issuesQuery.data === undefined);
-
-  const error = pinsQuery.error ?? issuesQuery.error;
+  const loading = pinsQuery.isLoading && pinsQuery.data === undefined;
+  const error = pinsQuery.error;
 
   return (
     <View className="flex-1 bg-background">
@@ -94,13 +73,7 @@ export default function PinnedHomePage() {
             Failed to load:{" "}
             {error instanceof Error ? error.message : "unknown error"}
           </Text>
-          <Button
-            variant="outline"
-            onPress={() => {
-              void pinsQuery.refetch();
-              void issuesQuery.refetch();
-            }}
-          >
+          <Button variant="outline" onPress={() => pinsQuery.refetch()}>
             <Text>Retry</Text>
           </Button>
         </View>
@@ -129,31 +102,6 @@ export default function PinnedHomePage() {
               <View key={pin.id}>
                 {idx > 0 ? <Divider /> : null}
                 <PinRow pin={pin} wsId={wsId} wsSlug={wsSlug} />
-              </View>
-            ))
-          )}
-
-          <SectionHeader
-            title="Issues"
-            onSeeAll={() => wsSlug && router.push(`/${wsSlug}/issues`)}
-          />
-          {previewIssues.length === 0 ? (
-            <EmptySection
-              icon="list-outline"
-              iconColor={THEME[colorScheme].mutedForeground}
-              message="No issues in this workspace yet."
-            />
-          ) : (
-            previewIssues.map((issue, idx) => (
-              <View key={issue.id}>
-                {idx > 0 ? <Divider /> : null}
-                <IssueRow
-                  issue={issue}
-                  showStatus
-                  onPress={() => {
-                    if (wsSlug) router.push(`/${wsSlug}/issue/${issue.id}`);
-                  }}
-                />
               </View>
             ))
           )}
