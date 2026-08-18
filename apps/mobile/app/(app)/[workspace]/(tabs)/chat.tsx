@@ -73,6 +73,7 @@ import {
   useChatDraftsStore,
 } from "@/data/stores/chat-drafts-store";
 import { useChatSessionPickerStore } from "@/data/stores/chat-session-picker-store";
+import { useChatAgentSelectStore } from "@/data/stores/chat-agent-select-store";
 import { useChatSessionRealtime } from "@/data/realtime/use-chat-session-realtime";
 import {
   invalidatePendingTask,
@@ -446,6 +447,22 @@ export default function ChatTab() {
     setActiveSessionId(selectRequest.id);
     consumeSelect();
   }, [selectRequest, consumeSelect]);
+
+  // Apply an agent pick from the More → Agents list: start a new chat
+  // with that agent (blank session + selected agent, mirroring the
+  // agent-picker sheet's handlePickAgent).
+  const agentSelectRequest = useChatAgentSelectStore(
+    (s) => s.selectAgentRequest,
+  );
+  const consumeAgentSelect = useChatAgentSelectStore(
+    (s) => s.consumeSelect,
+  );
+  useEffect(() => {
+    if (!agentSelectRequest) return;
+    setSelectedAgentId(agentSelectRequest.agentId);
+    setActiveSessionId(null);
+    consumeAgentSelect();
+  }, [agentSelectRequest, consumeAgentSelect]);
 
   const handleDeleteActive = useCallback(() => {
     if (!activeSession) return;

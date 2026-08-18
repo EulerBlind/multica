@@ -17,6 +17,7 @@ import { ModalCloseButton } from "@/components/ui/modal-close-button";
 import { useNewIssueDraftResetOnWorkspaceChange } from "@/data/stores/new-issue-draft-store";
 import { useNewProjectDraftResetOnWorkspaceChange } from "@/data/stores/new-project-draft-store";
 import { useChatSessionPickerResetOnWorkspaceChange } from "@/data/stores/chat-session-picker-store";
+import { useChatAgentSelectResetOnWorkspaceChange } from "@/data/stores/chat-agent-select-store";
 
 /**
  * Shared Stack.Screen options for every iOS formSheet-presented sheet route.
@@ -118,6 +119,7 @@ export default function WorkspaceLayout() {
   useNewIssueDraftResetOnWorkspaceChange(matched?.id ?? null);
   useNewProjectDraftResetOnWorkspaceChange(matched?.id ?? null);
   useChatSessionPickerResetOnWorkspaceChange(matched?.id ?? null);
+  useChatAgentSelectResetOnWorkspaceChange(matched?.id ?? null);
 
   // Wait for the workspaces list before deciding membership — otherwise a
   // valid deep link would briefly redirect away on cold start.
@@ -302,6 +304,17 @@ export default function WorkspaceLayout() {
         <Stack.Screen name="issues-filter" options={SHEET_OPTIONS} />
         {/* Chat session-switch sheet. */}
         <Stack.Screen name="chat-sessions" options={SHEET_OPTIONS} />
+        {/* Full workspace Issues list — pushed from the Pinned home tab's
+            "See all" row (the primary tab now shows a 5-item preview). */}
+        <Stack.Screen
+          name="issues"
+          options={{ title: "Issues", headerBackTitle: "Back" }}
+        />
+        {/* Per-user My Issues list — reached from the More popover. */}
+        <Stack.Screen
+          name="my-issues"
+          options={{ title: "My Issues", headerBackTitle: "Back" }}
+        />
         {/* Workspace switcher — reached from the More popover's collapsed
             WorkspaceCard. Two-step (pick → iOS Alert confirm → switch). */}
         <Stack.Screen name="switch-workspace" options={SHEET_OPTIONS} />

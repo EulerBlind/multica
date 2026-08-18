@@ -74,7 +74,8 @@ interface NavItem {
 }
 
 const NAV_ITEMS: NavItem[] = [
-  { label: "Pinned", icon: "pinned", path: "/more/pins" },
+  { label: "My Issues", icon: "myIssues", path: "/my-issues" },
+  { label: "Agents", icon: "agents", path: "/more/agents" },
   { label: "Projects", icon: "projects", path: "/more/projects" },
   // Autopilots open in-app (list + detail). Must NOT use Linking.openURL /
   // external browser — see QIA-319 replan.
