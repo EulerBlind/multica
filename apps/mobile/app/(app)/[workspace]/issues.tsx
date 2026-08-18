@@ -1,5 +1,6 @@
 /**
- * Workspace-wide Issues tab. Mirrors web `packages/views/issues/components/
+ * Workspace-wide Issues screen (pushed from the Pinned tab's "See all
+ * issues" row). Mirrors web `packages/views/issues/components/
  * issues-page.tsx:32-94`: fetch every issue in the workspace, expose
  * `all / members / agents` scope tabs, group by status, allow status +
  * priority filtering.
@@ -9,10 +10,10 @@
  * scoped (no scope param on the wire), so `issueKeys.list(wsId)` and
  * `useIssuesRealtime` need no changes.
  *
- * This tab replaced the former per-user "My Issues" tab (the workspace-wide
- * list was previously reached via More → Issues). Scopes are
- * `all / members / agents` (assignee_type pre-filter), not the per-user
- * `assigned / created / agents` predicates.
+ * This screen used to be the bottom-tab "Issues" entry; per the mobile UI
+ * rework it now lives one level deeper and is reached from the Pinned
+ * home tab (which shows the workspace's issues 5-at-a-time). The former
+ * per-user "My Issues" tab is reachable from the More popover.
  *
  * Filters beyond status/priority (assignee / project / label / creator)
  * are deferred — power-user features with non-trivial picker cost; ship
@@ -21,7 +22,7 @@
 import { useMemo } from "react";
 import { Pressable, SectionList, View } from "react-native";
 import { useQuery } from "@tanstack/react-query";
-import { router } from "expo-router";
+import { Stack, router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import type {
   IssuePriority,
@@ -30,8 +31,6 @@ import type {
 } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
 import { Button } from "@/components/ui/button";
-import { Header } from "@/components/ui/header";
-import { HeaderActions } from "@/components/ui/app-header-actions";
 import { StatusIcon } from "@/components/ui/status-icon";
 import { IssueRow } from "@/components/issue/issue-row";
 import { IssuesLoading } from "@/components/issue/issues-loading";
@@ -120,7 +119,9 @@ export default function IssuesPage() {
 
   return (
     <View className="flex-1 bg-background">
-      <Header title="Issues" right={<HeaderActions />} />
+      <Stack.Screen
+        options={{ title: "Issues", headerBackTitle: "Back" }}
+      />
       <ScopeToolbar
         scopes={SCOPES}
         scope={scope}

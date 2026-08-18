@@ -19,6 +19,10 @@ export const PLATFORM_NAV_ICON_MAP = {
     ios: { unfocused: "pin", focused: "pin.fill" },
     android: { unfocused: "pin-outline", focused: "pin" },
   },
+  agents: {
+    ios: { unfocused: "person.2", focused: "person.2.fill" },
+    android: { unfocused: "people-outline", focused: "people" },
+  },
   issues: {
     ios: { unfocused: "list.bullet", focused: "list.bullet" },
     android: { unfocused: "list-outline", focused: "list" },
