@@ -200,6 +200,10 @@ import type {
   ListWecomInstallationsResponse,
   RegisterWecomBYORequest,
   RedeemWecomBindingTokenResponse,
+  InfoFlowInstallation,
+  ListInfoFlowInstallationsResponse,
+  RegisterInfoFlowBYORequest,
+  RedeemInfoFlowBindingTokenResponse,
   TelegramInstallation,
   ListTelegramInstallationsResponse,
   RegisterTelegramRequest,
@@ -377,6 +381,12 @@ import {
   EMPTY_WECOM_INSTALLATION,
   EMPTY_LIST_WECOM_INSTALLATIONS_RESPONSE,
   EMPTY_REDEEM_WECOM_BINDING_TOKEN_RESPONSE,
+  InfoFlowInstallationSchema,
+  ListInfoFlowInstallationsResponseSchema,
+  RedeemInfoFlowBindingTokenResponseSchema,
+  EMPTY_INFOFLOW_INSTALLATION,
+  EMPTY_LIST_INFOFLOW_INSTALLATIONS_RESPONSE,
+  EMPTY_REDEEM_INFOFLOW_BINDING_TOKEN_RESPONSE,
   TelegramInstallationSchema,
   ListTelegramInstallationsResponseSchema,
   RedeemTelegramBindingTokenResponseSchema,
@@ -5114,6 +5124,61 @@ export class ApiClient {
       RedeemDingTalkBindingTokenResponseSchema,
       EMPTY_REDEEM_DINGTALK_BINDING_TOKEN_RESPONSE,
       { endpoint: "POST /api/dingtalk/binding/redeem" },
+    );
+  }
+  // InfoFlow (如流) integration. It uses the same bring-your-own-app model as
+  // DingTalk: the operator pastes the open-platform application id, AppKey and
+  // AppSecret, and the backend validates them before persisting an installation.
+  async listInfoFlowInstallations(
+    workspaceId: string,
+  ): Promise<ListInfoFlowInstallationsResponse> {
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/infoflow/installations`,
+    );
+    return parseWithFallback(
+      raw,
+      ListInfoFlowInstallationsResponseSchema,
+      EMPTY_LIST_INFOFLOW_INSTALLATIONS_RESPONSE,
+      { endpoint: "GET /api/workspaces/:id/infoflow/installations" },
+    );
+  }
+
+  async registerInfoFlowBYO(
+    workspaceId: string,
+    agentId: string,
+    body: RegisterInfoFlowBYORequest,
+  ): Promise<InfoFlowInstallation> {
+    const search = new URLSearchParams({ agent_id: agentId });
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/infoflow/install/byo?${search.toString()}`,
+      {
+        method: "POST",
+        body: JSON.stringify(body),
+      },
+    );
+    return parseWithFallback(raw, InfoFlowInstallationSchema, EMPTY_INFOFLOW_INSTALLATION, {
+      endpoint: "POST /api/workspaces/:id/infoflow/install/byo",
+    });
+  }
+
+  async deleteInfoFlowInstallation(workspaceId: string, installationId: string): Promise<void> {
+    await this.fetch(`/api/workspaces/${workspaceId}/infoflow/installations/${installationId}`, {
+      method: "DELETE",
+    });
+  }
+
+  async redeemInfoFlowBindingToken(
+    token: string,
+  ): Promise<RedeemInfoFlowBindingTokenResponse> {
+    const raw = await this.fetch<unknown>(`/api/infoflow/binding/redeem`, {
+      method: "POST",
+      body: JSON.stringify({ token }),
+    });
+    return parseWithFallback(
+      raw,
+      RedeemInfoFlowBindingTokenResponseSchema,
+      EMPTY_REDEEM_INFOFLOW_BINDING_TOKEN_RESPONSE,
+      { endpoint: "POST /api/infoflow/binding/redeem" },
     );
   }
   // WeCom smart-bot ("智能机器人" / aibot) integration. The bot dials a

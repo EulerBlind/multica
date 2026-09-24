@@ -54,6 +54,7 @@
     "./slack": "./slack/index.ts",
     "./dingtalk": "./dingtalk/index.ts",
     "./wecom": "./wecom/index.ts",
+    "./infoflow": "./infoflow/index.ts",
     "./telegram": "./telegram/index.ts",
     "./invite": "./invite/index.ts",
     "./invitations": "./invitations/index.ts",

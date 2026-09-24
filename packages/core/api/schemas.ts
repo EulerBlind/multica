@@ -41,6 +41,9 @@ import type {
   WecomInstallation,
   ListWecomInstallationsResponse,
   RedeemWecomBindingTokenResponse,
+  InfoFlowInstallation,
+  ListInfoFlowInstallationsResponse,
+  RedeemInfoFlowBindingTokenResponse,
   TelegramInstallation,
   ListTelegramInstallationsResponse,
   RedeemTelegramBindingTokenResponse,
@@ -3339,6 +3342,60 @@ export const EMPTY_REDEEM_WECOM_BINDING_TOKEN_RESPONSE: RedeemWecomBindingTokenR
   workspace_id: "",
   installation_id: "",
   wecom_user_id: "",
+};
+
+// InfoFlow (如流) bring-your-own-app installation responses. `.loose()` so a
+// newer backend field never fails the parse on an older desktop build (see
+// CLAUDE.md → API Compatibility). Defaults degrade safely: `configured`
+// defaults false (renders the "ask your operator" state rather than a Connect
+// dialog whose submit is guaranteed to fail) and a missing `status` defaults
+// to "revoked" so a broken read never shows a robot as connected.
+export const InfoFlowInstallationSchema = z.object({
+  id: z.string(),
+  workspace_id: z.string().default(""),
+  agent_id: z.string().default(""),
+  application_id: z.string().default(""),
+  bot_user_id: z.string().optional(),
+  installer_user_id: z.string().default(""),
+  status: z.string().default("revoked"),
+  installed_at: z.string().default(""),
+  created_at: z.string().default(""),
+  updated_at: z.string().default(""),
+}).loose();
+
+export const EMPTY_INFOFLOW_INSTALLATION: InfoFlowInstallation = {
+  id: "",
+  workspace_id: "",
+  agent_id: "",
+  application_id: "",
+  installer_user_id: "",
+  status: "revoked",
+  installed_at: "",
+  created_at: "",
+  updated_at: "",
+};
+
+export const ListInfoFlowInstallationsResponseSchema = z.object({
+  installations: z.array(InfoFlowInstallationSchema).default([]),
+  configured: z.boolean().default(false),
+  install_supported: z.boolean().optional(),
+}).loose();
+
+export const EMPTY_LIST_INFOFLOW_INSTALLATIONS_RESPONSE: ListInfoFlowInstallationsResponse = {
+  installations: [],
+  configured: false,
+};
+
+export const RedeemInfoFlowBindingTokenResponseSchema = z.object({
+  workspace_id: z.string().default(""),
+  installation_id: z.string().default(""),
+  infoflow_user_id: z.string().default(""),
+}).loose();
+
+export const EMPTY_REDEEM_INFOFLOW_BINDING_TOKEN_RESPONSE: RedeemInfoFlowBindingTokenResponse = {
+  workspace_id: "",
+  installation_id: "",
+  infoflow_user_id: "",
 };
 
 export const TelegramInstallationSchema = z.object({

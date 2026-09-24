@@ -11,6 +11,7 @@ import {
   dingtalkInstallationsOptions,
 } from "@multica/core/dingtalk";
 import { wecomInstallationsOptions } from "@multica/core/wecom";
+import { infoflowInstallationsOptions } from "@multica/core/infoflow";
 import { telegramInstallationsOptions } from "@multica/core/telegram";
 import { memberListOptions } from "@multica/core/workspace/queries";
 import { LarkAgentBindButton } from "../../../settings/components/lark-tab";
@@ -28,6 +29,11 @@ import { WecomAgentBindButton } from "../../../settings/components/wecom-tab";
 import { WecomMark } from "../../../settings/components/wecom-mark";
 import { TelegramAgentBindButton } from "../../../settings/components/telegram-tab";
 import { TelegramMark } from "../../../settings/components/telegram-mark";
+import {
+  InfoFlowAgentBindButton,
+  InfoFlowConnectionLabel,
+} from "../../../settings/components/infoflow-tab";
+import { InfoFlowMark } from "../../../settings/components/infoflow-mark";
 import { useT } from "../../../i18n";
 
 /**
@@ -70,6 +76,10 @@ export function IntegrationsTab({ agent }: { agent: Agent }) {
   });
   const { data: telegramListing } = useQuery({
     ...telegramInstallationsOptions(wsId),
+    enabled: !!wsId,
+  });
+  const { data: infoflowListing } = useQuery({
+    ...infoflowInstallationsOptions(wsId),
     enabled: !!wsId,
   });
   const { data: members = [] } = useQuery({
@@ -151,6 +161,16 @@ export function IntegrationsTab({ agent }: { agent: Agent }) {
       (inst) => inst.agent_id === agent.id && inst.status === "active",
     ) ?? false;
 
+  // InfoFlow uses the same per-agent management rule as Lark/DingTalk: the
+  // target agent's owner or a workspace owner/admin may connect and disconnect.
+  const canManageInfoflow = isWorkspaceAdmin || isAgentOwner;
+  const infoflowConfigured = infoflowListing?.configured === true;
+  const infoflowInstallSupported = infoflowListing?.install_supported === true;
+  const infoflowInstallation = infoflowListing?.installations.find(
+    (inst) => inst.agent_id === agent.id && inst.status === "active",
+  );
+  const infoflowHasActiveInstall = !!infoflowInstallation;
+
   // Preserve the established Integrations management gate: a member who can
   // manage no platform gets the read-only note instead of install controls.
   // The agent-scoped DingTalk relationship remains visible because reaching
@@ -160,7 +180,8 @@ export function IntegrationsTab({ agent }: { agent: Agent }) {
     !canManageSlack &&
     !canManageDingtalk &&
     !canManageWecom &&
-    !canManageTelegram
+    !canManageTelegram &&
+    !canManageInfoflow
   ) {
     return (
       <div className="space-y-6">
@@ -205,9 +226,34 @@ export function IntegrationsTab({ agent }: { agent: Agent }) {
             )}
           </section>
         ) : (
-          <p className="text-caption text-muted-foreground">
-            {t(($) => $.tab_body.integrations.members_note)}
-          </p>
+          <>
+            {infoflowInstallation ? (
+              <section className="rounded-lg border">
+                <div className="flex items-start gap-3 p-4">
+                  <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border bg-muted/40 text-muted-foreground">
+                    <InfoFlowMark className="h-4 w-4" />
+                  </span>
+                  <div className="min-w-0 flex-1 space-y-1">
+                    <h3 className="text-body font-medium">
+                      {ts(($) => $.infoflow.section_title)}
+                    </h3>
+                    <p className="text-caption leading-relaxed text-muted-foreground">
+                      {ts(($) => $.infoflow.agent_page_description)}
+                    </p>
+                  </div>
+                </div>
+                <div className="border-t px-4 py-3">
+                  <InfoFlowConnectionLabel
+                    applicationID={infoflowInstallation.application_id}
+                  />
+                </div>
+              </section>
+            ) : (
+              <p className="text-caption text-muted-foreground">
+                {t(($) => $.tab_body.integrations.members_note)}
+              </p>
+            )}
+          </>
         )}
       </div>
     );
@@ -435,6 +481,44 @@ export function IntegrationsTab({ agent }: { agent: Agent }) {
             </div>
           ) : (
             <TelegramAgentBindButton agentId={agent.id} agentName={agent.name} />
+          )}
+        </div>
+      </section>
+
+      <section className="rounded-lg border">
+        <div className="flex items-start gap-3 p-4">
+          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border bg-muted/40 text-muted-foreground">
+            <InfoFlowMark className="h-4 w-4" />
+          </span>
+          <div className="min-w-0 flex-1 space-y-1">
+            <h3 className="text-body font-medium">{ts(($) => $.infoflow.section_title)}</h3>
+            <p className="text-caption leading-relaxed text-muted-foreground">
+              {ts(($) => $.infoflow.page_description)}
+            </p>
+          </div>
+        </div>
+        <div className="border-t px-4 py-3">
+          {!canManageInfoflow ? (
+            <p className="text-caption text-muted-foreground">
+              {t(($) => $.tab_body.integrations.members_note)}
+            </p>
+          ) : !infoflowConfigured ? (
+            <p className="text-caption text-muted-foreground">
+              {ts(($) => $.infoflow.not_enabled_title)}
+            </p>
+          ) : !infoflowInstallSupported && !infoflowHasActiveInstall ? (
+            <div className="space-y-1">
+              <p className="text-caption font-medium">{ts(($) => $.infoflow.preview_title)}</p>
+              <p className="text-caption text-muted-foreground">
+                {ts(($) => $.infoflow.preview_description)}
+              </p>
+            </div>
+          ) : (
+            <InfoFlowAgentBindButton
+              agentId={agent.id}
+              agentName={agent.name}
+              agentOwnerId={agent.owner_id}
+            />
           )}
         </div>
       </section>
