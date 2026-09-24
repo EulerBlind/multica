@@ -11,10 +11,10 @@ func TestFrameRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	in := Frame{
-		SeqID: 42,
-		LogID: "log-1",
+		SeqID:   42,
+		LogID:   "log-1",
 		Service: 1,
-		Method: FrameData,
+		Method:  FrameData,
 		Headers: []Header{{Key: "type", Value: "event_ack"}},
 		Payload: payload,
 	}

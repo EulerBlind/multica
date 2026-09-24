@@ -39,9 +39,9 @@ const (
 type FrameMethod int32
 
 const (
-	FrameControl FrameMethod = 0
-	FrameData    FrameMethod = 1
-	FrameRequest FrameMethod = 2
+	FrameControl  FrameMethod = 0
+	FrameData     FrameMethod = 1
+	FrameRequest  FrameMethod = 2
 	FrameResponse FrameMethod = 3
 )
 

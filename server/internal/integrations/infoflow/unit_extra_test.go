@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -14,6 +15,8 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/integrations/channel"
+	"github.com/multica-ai/multica/server/internal/integrations/channel/engine"
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
@@ -311,7 +314,7 @@ func TestChannelConnectWithFakeDialer(t *testing.T) {
 	conn := &fakeWSConn{reads: [][]byte{frameBytes}}
 	ch := &infoflowChannel{appKey: "k", appSecret: "s", appID: "14534", handler: func(context.Context, channel.InboundMessage) error { return nil }}
 	connector := &wsConnector{
-		open: func(context.Context) (string, error) { return "ws://fake", nil },
+		open:   func(context.Context) (string, error) { return "ws://fake", nil },
 		dialer: fakeDialer{conn: conn},
 		onFrame: func(ctx context.Context, frame Frame) error {
 			raw, err := parseFramePayload(frame)
@@ -335,10 +338,10 @@ func TestChannelConnectWithFakeDialer(t *testing.T) {
 func TestOutboundProcessEventIgnoresForeignChannel(t *testing.T) {
 	o := NewOutbound(fakeOutboundQueries{delivery: db.ChannelTaskDelivery{ChannelType: "slack"}}, nil, nil, nil)
 	err := o.processEvent(context.Background(), events.Event{
-		Type: protocol.EventChatDone,
-		TaskID: "11111111-1111-1111-1111-111111111111",
+		Type:          protocol.EventChatDone,
+		TaskID:        "11111111-1111-1111-1111-111111111111",
 		ChatSessionID: "22222222-2222-2222-2222-222222222222",
-		Payload: protocol.ChatDonePayload{Content: "hi"},
+		Payload:       protocol.ChatDonePayload{Content: "hi"},
 	})
 	if err != nil {
 		t.Fatalf("foreign channel should be ignored: %v", err)
@@ -365,10 +368,186 @@ func (f fakeOutboundQueries) GetChannelInstallation(context.Context, db.GetChann
 	return db.ChannelInstallation{Status: "active"}, nil
 }
 
-
 func newJSONServer(t *testing.T, handler http.HandlerFunc) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 	return srv
+}
+
+type fakeMinter struct {
+	tokens int
+	err    error
+}
+
+func (f *fakeMinter) Mint(context.Context, pgtype.UUID, pgtype.UUID, string) (BindingToken, error) {
+	if f.err != nil {
+		return BindingToken{}, f.err
+	}
+	f.tokens++
+	return BindingToken{Raw: "raw-token"}, nil
+}
+
+func newReplierSendServer(t *testing.T) (*httptest.Server, *infoflowSendRecorder) {
+	t.Helper()
+	rec := &infoflowSendRecorder{}
+	mux := http.NewServeMux()
+	send := func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+		rec.record(r.URL.Path, string(body))
+		_, _ = w.Write([]byte(`{"code":"ok","data":{"messageid":"m-1"}}`))
+	}
+	mux.HandleFunc("/auth/app_access_token", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"code":"ok","data":{"app_access_token":"at_test","expire":7200}}`))
+	})
+	mux.HandleFunc("/robot/msg/groupmsgsend", send)
+	mux.HandleFunc("/app/message/send", send)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv, rec
+}
+
+func replierInstallation(t *testing.T, srv *httptest.Server) engine.ResolvedInstallation {
+	t.Helper()
+	cfg, err := json.Marshal(installConfig{
+		AppID: "14534", AppKey: "key", AppSecretEncrypted: base64.StdEncoding.EncodeToString([]byte("secret")), AgentID: "14534",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return engine.ResolvedInstallation{
+		WorkspaceID: util.MustParseUUID("11111111-1111-1111-1111-111111111111"),
+		ID:          util.MustParseUUID("22222222-2222-2222-2222-222222222222"),
+		Platform:    db.ChannelInstallation{Config: cfg},
+	}
+}
+
+func TestReplierBindingPromptPrivate(t *testing.T) {
+	srv, rec := newReplierSendServer(t)
+	minter := &fakeMinter{}
+	r := NewOutboundReplier(OutboundReplierConfig{
+		Binding: minter, Client: NewClient(srv.Client(), srv.URL), AppURL: "https://app.example",
+	})
+	msg := channel.InboundMessage{Source: channel.Source{ChatType: channel.ChatTypeP2P, ChatID: "u1", SenderID: "u1"}}
+	r.Reply(context.Background(), replierInstallation(t, srv), msg, engine.Result{Outcome: engine.OutcomeNeedsBinding, Sender: "u1"})
+	if minter.tokens != 1 {
+		t.Fatalf("minted tokens = %d, want 1", minter.tokens)
+	}
+	sent := rec.sent()
+	if len(sent) != 1 || sent[0] != "/app/message/send" {
+		t.Fatalf("binding prompt sends = %v, want one private send", sent)
+	}
+}
+
+func TestReplierBindingPromptGroupNeverCarriesToken(t *testing.T) {
+	srv, rec := newReplierSendServer(t)
+	minter := &fakeMinter{}
+	r := NewOutboundReplier(OutboundReplierConfig{
+		Binding: minter, Client: NewClient(srv.Client(), srv.URL), AppURL: "https://app.example",
+	})
+	msg := channel.InboundMessage{Source: channel.Source{ChatType: channel.ChatTypeGroup, ChatID: "123", SenderID: "u1"}}
+	r.Reply(context.Background(), replierInstallation(t, srv), msg, engine.Result{Outcome: engine.OutcomeNeedsBinding})
+	if minter.tokens != 0 {
+		t.Fatalf("group prompt must not mint a token, minted %d", minter.tokens)
+	}
+	if sent := rec.sent(); len(sent) != 1 || sent[0] != "/robot/msg/groupmsgsend" {
+		t.Fatalf("group hint sends = %v", sent)
+	}
+}
+
+func TestReplierStatusAndIssueOutcomes(t *testing.T) {
+	srv, rec := newReplierSendServer(t)
+	r := NewOutboundReplier(OutboundReplierConfig{Client: NewClient(srv.Client(), srv.URL)})
+	inst := replierInstallation(t, srv)
+	msg := channel.InboundMessage{Source: channel.Source{ChatType: channel.ChatTypeP2P, ChatID: "u1", SenderID: "u1"}}
+	for _, outcome := range []engine.Outcome{engine.OutcomeAgentOffline, engine.OutcomeAgentArchived, engine.OutcomeFreshPending, engine.OutcomeChatStarted, engine.OutcomeIssueUsage} {
+		r.Reply(context.Background(), inst, msg, engine.Result{Outcome: outcome})
+	}
+	if got := len(rec.sent()); got != 5 {
+		t.Fatalf("status/command notices sent = %d, want 5", got)
+	}
+	r.Reply(context.Background(), inst, msg, engine.Result{
+		Outcome: engine.OutcomeIngested, IssueID: util.MustParseUUID("33333333-3333-3333-3333-333333333333"),
+		IssueIdentifier: "MUL-1", IssueTitle: "a title",
+	})
+	r.Reply(context.Background(), inst, msg, engine.Result{
+		Outcome: engine.OutcomeIngested, IssueID: util.MustParseUUID("33333333-3333-3333-3333-333333333333"),
+		IssueIdentifier: "MUL-1", IssueDuplicate: true,
+	})
+	if got := len(rec.sent()); got != 7 {
+		t.Fatalf("issue notices sent = %d, want 7 total", got)
+	}
+}
+
+func TestReplierDroppedIssueRefusal(t *testing.T) {
+	srv, rec := newReplierSendServer(t)
+	r := NewOutboundReplier(OutboundReplierConfig{Client: NewClient(srv.Client(), srv.URL)})
+	inst := replierInstallation(t, srv)
+	msg := channel.InboundMessage{
+		Source:         channel.Source{ChatType: channel.ChatTypeP2P, ChatID: "u1", SenderID: "u1"},
+		AddressedToBot: true,
+		CommandText:    "/issue broken",
+	}
+	r.Reply(context.Background(), inst, msg, engine.Result{Outcome: engine.OutcomeDropped, DropReason: engine.DropReasonNonWorkspaceMember})
+	if got := len(rec.sent()); got != 1 {
+		t.Fatalf("drop refusal sends = %d, want 1", got)
+	}
+	// A non-issue drop stays silent.
+	r.Reply(context.Background(), inst, msg, engine.Result{Outcome: engine.OutcomeDropped, DropReason: engine.DropReasonDuplicate})
+	if got := len(rec.sent()); got != 1 {
+		t.Fatalf("duplicate drop must stay silent, sends = %d", got)
+	}
+}
+
+func TestChannelSendGuardsAndTarget(t *testing.T) {
+	srv, rec := newReplierSendServer(t)
+	ch := &infoflowChannel{client: NewClient(srv.Client(), srv.URL), appKey: "key", appSecret: "secret", appID: "14534"}
+	if _, err := ch.Send(context.Background(), channel.OutboundMessage{Text: "no target"}); !errors.Is(err, ErrSendRequiresTarget) {
+		t.Fatalf("empty target error = %v", err)
+	}
+	if _, err := ch.SendToTarget(context.Background(), infoflowSendTarget{ChatType: "p2p", ChatID: "u1", SenderID: "u1"}, "hi"); err != nil {
+		t.Fatalf("SendToTarget p2p: %v", err)
+	}
+	if sent := rec.sent(); len(sent) != 1 || sent[0] != "/app/message/send" {
+		t.Fatalf("p2p send path = %v", sent)
+	}
+}
+
+func TestAddressedToBotRequiresSignalWithoutBotUserID(t *testing.T) {
+	parse := func(body string) infoflowRaw {
+		t.Helper()
+		var raw infoflowRaw
+		if err := json.Unmarshal([]byte(`{"message":{"header":{"msgtype":"TEXT"},"body":`+body+`}}`), &raw); err != nil {
+			t.Fatal(err)
+		}
+		return raw
+	}
+	named := parse(`[{"type":"AT","name":"someone"}]`)
+	if addressedToBot(named, "", "MESSAGE_RECEIVE") {
+		t.Fatal("a named @ must not count as addressed-to-bot when no bot user id is configured")
+	}
+	atAll := parse(`[{"type":"AT","atall":true}]`)
+	if !addressedToBot(atAll, "", "MESSAGE_RECEIVE") {
+		t.Fatal("@all must count as addressed-to-bot")
+	}
+	matched := parse(`[{"type":"AT","userid":"bot-9"}]`)
+	if !addressedToBot(matched, "bot-9", "MESSAGE_RECEIVE") {
+		t.Fatal("a matching @userid must count as addressed-to-bot")
+	}
+	if !addressedToBot(named, "", "ALL_MESSAGE_FORWARD") {
+		t.Fatal("ALL_MESSAGE_FORWARD is always addressed")
+	}
+}
+
+func TestParseFramePayloadErrors(t *testing.T) {
+	if _, err := parseFramePayload(Frame{}); err == nil {
+		t.Fatal("empty payload must error")
+	}
+	if _, err := parseFramePayload(Frame{Payload: []byte("{")}); err == nil {
+		t.Fatal("malformed json must error")
+	}
+	raw, err := parseFramePayload(Frame{Payload: []byte(`{"a":1}`)})
+	if err != nil || len(raw) == 0 {
+		t.Fatalf("valid payload: %v %v", raw, err)
+	}
 }

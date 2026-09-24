@@ -120,15 +120,15 @@ func (o *Outbound) processEvent(ctx context.Context, e events.Event) error {
 
 func bindingFromTaskDelivery(delivery db.ChannelTaskDelivery) db.ChannelChatSessionBinding {
 	return db.ChannelChatSessionBinding{
-		ID: delivery.BindingID,
+		ID:             delivery.BindingID,
 		InstallationID: delivery.InstallationID,
-		ChannelType: delivery.ChannelType,
-		ChannelChatID: delivery.ChannelChatID,
-		ChatType: delivery.ChatType,
-		LastMessageID: delivery.ChannelMessageID,
-		LastThreadID: delivery.ChannelThreadID,
-		RouteRevision: delivery.RouteRevision,
-		Config: delivery.Config,
+		ChannelType:    delivery.ChannelType,
+		ChannelChatID:  delivery.ChannelChatID,
+		ChatType:       delivery.ChatType,
+		LastMessageID:  delivery.ChannelMessageID,
+		LastThreadID:   delivery.ChannelThreadID,
+		RouteRevision:  delivery.RouteRevision,
+		Config:         delivery.Config,
 	}
 }
 

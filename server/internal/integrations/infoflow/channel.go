@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/multica-ai/multica/server/internal/integrations/channel"
 )
@@ -34,12 +35,30 @@ func (c *infoflowChannel) Capabilities() channel.Capability {
 
 func (c *infoflowChannel) Disconnect(context.Context) error { return nil }
 
+// ErrSendRequiresTarget is returned by Channel.Send when it cannot tell which
+// conversation kind the caller means. The channel.OutboundMessage envelope
+// carries only a ChatID, and an InfoFlow group id and a single-chat user id are
+// not distinguishable from the string alone — sending a 1:1 reply down the
+// group endpoint (or the reverse) would silently address the wrong API. Callers
+// that know the conversation kind must use SendToTarget; the generic Send path
+// only serves group destinations.
+var ErrSendRequiresTarget = errors.New("infoflow: channel.Send needs a conversation kind; use SendToTarget")
+
 func (c *infoflowChannel) Send(ctx context.Context, out channel.OutboundMessage) (channel.SendResult, error) {
-	// The Channel contract carries only ChatID and text; InfoFlow's minimal Send
-	// path sends to the chat as a group message. Richer P2P routing is handled by
-	// the outbound subscriber, which reads the binding config.
-	target := infoflowSendTarget{ChatType: string(channel.ChatTypeGroup), ChatID: out.ChatID}
-	msgID, err := (&sender{client: c.client, appKey: c.appKey, appSecret: c.appSecret, agentID: c.appID}).sendText(ctx, target, out.Text)
+	if strings.TrimSpace(out.ChatID) == "" {
+		return channel.SendResult{}, ErrSendRequiresTarget
+	}
+	// Generic Send serves group destinations only: the envelope cannot express
+	// the conversation kind, and a p2p reply must go through the application
+	// send API instead. Prefer SendToTarget when the kind is known.
+	return c.SendToTarget(ctx, infoflowSendTarget{ChatType: string(channel.ChatTypeGroup), ChatID: out.ChatID}, out.Text)
+}
+
+// SendToTarget delivers text to an explicit InfoFlow destination (group or
+// 1:1). The outbound subscriber and the replier use it because they recover the
+// conversation kind from the binding config.
+func (c *infoflowChannel) SendToTarget(ctx context.Context, target infoflowSendTarget, text string) (channel.SendResult, error) {
+	msgID, err := (&sender{client: c.client, appKey: c.appKey, appSecret: c.appSecret, agentID: c.appID}).sendText(ctx, target, text)
 	if err != nil {
 		return channel.SendResult{}, err
 	}

@@ -24,15 +24,15 @@ const (
 // endpointResponse is the success shape of the two-phase long-connection
 // endpoint fetch.
 type endpointResponse struct {
-	Code int `json:"code"`
+	Code int    `json:"code"`
 	Msg  string `json:"msg"`
 	Data struct {
 		URL          string `json:"url"`
 		ClientConfig struct {
-			ReconnectCount   int `json:"reconnect_count"`
+			ReconnectCount    int `json:"reconnect_count"`
 			ReconnectInterval int `json:"reconnect_interval"`
-			ReconnectNonce   int `json:"reconnect_nonce"`
-			PingInterval     int `json:"ping_interval"`
+			ReconnectNonce    int `json:"reconnect_nonce"`
+			PingInterval      int `json:"ping_interval"`
 		} `json:"client_config"`
 	} `json:"data"`
 }
@@ -69,10 +69,10 @@ type wsConnector struct {
 	appKey     string
 	appSecret  string
 
-	dialer    wsDialer
-	open      func(ctx context.Context) (string, error)
-	onFrame   func(ctx context.Context, frame Frame) error
-	logger    *slog.Logger
+	dialer  wsDialer
+	open    func(ctx context.Context) (string, error)
+	onFrame func(ctx context.Context, frame Frame) error
+	logger  *slog.Logger
 
 	pingInterval time.Duration
 	readDeadline time.Duration

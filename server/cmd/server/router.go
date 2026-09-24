@@ -930,7 +930,14 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			infoflowClient := infoflow.NewClient(nil, "")
 			bindingSvc := infoflow.NewBindingTokenService(queries, pool)
 			h.InfoFlowBindingTokens = bindingSvc
-			channelRouter.Register(infoflow.TypeInfoFlow, infoflow.NewResolverSet(queries, pool))
+			replier := infoflow.NewOutboundReplier(infoflow.OutboundReplierConfig{
+				Binding: bindingSvc,
+				Decrypt: box.Open,
+				Client:  infoflowClient,
+				AppURL:  appURLFromEnv(),
+				Logger:  slog.Default(),
+			})
+			channelRouter.Register(infoflow.TypeInfoFlow, infoflow.NewResolverSet(queries, pool, replier))
 			infoflow.NewOutbound(queries, box.Open, infoflowClient, slog.Default()).Register(bus)
 			infoflow.Register(channelRegistry, infoflow.ChannelDeps{
 				Decrypt: box.Open,

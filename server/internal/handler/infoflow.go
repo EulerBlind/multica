@@ -128,8 +128,12 @@ func (h *Handler) RegisterInfoFlowBYO(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, infoflow.ErrInvalidApplicationID), errors.Is(err, infoflow.ErrInvalidAppKey), errors.Is(err, infoflow.ErrInvalidAppSecret), errors.Is(err, infoflow.ErrCredentialValidation):
 			writeError(w, http.StatusBadRequest, err.Error())
+		case errors.Is(err, infoflow.ErrAppOwnedBySameWorkspace):
+			writeError(w, http.StatusConflict, "this InfoFlow application is already connected to another agent in this workspace — disconnect it there first, then connect it here")
+		case errors.Is(err, infoflow.ErrAppOwnedByArchivedAgent):
+			writeError(w, http.StatusConflict, "this InfoFlow application is connected to an archived agent in this workspace — restore that agent, or disconnect its bot, before connecting it here")
 		case errors.Is(err, infoflow.ErrAppOwnedByAnotherWorkspace):
-			writeError(w, http.StatusConflict, "this InfoFlow application is already connected to a different workspace")
+			writeError(w, http.StatusConflict, "this InfoFlow application is already connected to a different Multica workspace — disconnect it there before connecting it here")
 		default:
 			writeError(w, http.StatusInternalServerError, "failed to register infoflow installation")
 		}
@@ -171,9 +175,9 @@ type RedeemInfoFlowBindingTokenRequest struct {
 }
 
 type RedeemInfoFlowBindingTokenResponse struct {
-	WorkspaceID     string `json:"workspace_id"`
-	InstallationID  string `json:"installation_id"`
-	InfoFlowUserID  string `json:"infoflow_user_id"`
+	WorkspaceID    string `json:"workspace_id"`
+	InstallationID string `json:"installation_id"`
+	InfoFlowUserID string `json:"infoflow_user_id"`
 }
 
 func (h *Handler) RedeemInfoFlowBindingToken(w http.ResponseWriter, r *http.Request) {
@@ -213,8 +217,8 @@ func (h *Handler) RedeemInfoFlowBindingToken(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	writeJSON(w, http.StatusOK, RedeemInfoFlowBindingTokenResponse{
-		WorkspaceID:     uuidToString(redeemed.WorkspaceID),
-		InstallationID:  uuidToString(redeemed.InstallationID),
-		InfoFlowUserID:  redeemed.InfoFlowUserID,
+		WorkspaceID:    uuidToString(redeemed.WorkspaceID),
+		InstallationID: uuidToString(redeemed.InstallationID),
+		InfoFlowUserID: redeemed.InfoFlowUserID,
 	})
 }

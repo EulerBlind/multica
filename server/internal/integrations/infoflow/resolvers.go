@@ -21,10 +21,11 @@ import (
 const originInfoFlowChat = "infoflow_chat"
 
 // NewResolverSet assembles the InfoFlow ResolverSet over the generated queries
-// plus a tx starter. This adapter starts with the minimum channel pipeline:
-// installation/identity/dedup/session/audit are required; media and typing are
-// omitted until the InfoFlow SDK/API surface for those capabilities is settled.
-func NewResolverSet(q *db.Queries, tx engine.TxStarter) engine.ResolverSet {
+// plus a tx starter. Installation/identity/dedup/session/audit are required;
+// Replier delivers the verdict-driven replies (notably the binding prompt for
+// an unbound sender); media and typing are omitted until the InfoFlow SDK/API
+// surface for those capabilities is settled.
+func NewResolverSet(q *db.Queries, tx engine.TxStarter, replier engine.OutboundReplier) engine.ResolverSet {
 	return engine.ResolverSet{
 		Installation: &installationResolver{q: q},
 		Identity:     &identityResolver{q: q},
@@ -35,6 +36,7 @@ func NewResolverSet(q *db.Queries, tx engine.TxStarter) engine.ResolverSet {
 			Fallback: "InfoFlow chat",
 		})},
 		Audit:      &auditor{q: q},
+		Replier:    replier,
 		OriginType: originInfoFlowChat,
 	}
 }
@@ -225,25 +227,25 @@ func (r *sessionBinder) StartSession(ctx context.Context, p engine.StartSessionP
 			BindingConfig:  config,
 			ChatType:       p.Message.Source.ChatType,
 		},
-		Initiator:                p.Sender,
-		Body:                     p.Message.Text,
-		CommandText:              p.Message.CommandText,
-		MessageID:                p.Message.MessageID,
-		ThreadID:                 p.Message.Source.ThreadID,
-		ClaimToken:               p.ClaimToken,
-		MediaPendingSeconds:      p.MediaPendingSeconds,
-		PersistMessage:           p.PersistMessage,
-		HistoryBoundaryPending:   p.HistoryBoundaryPending,
-		BeforeCommit:             p.BeforeCommit,
+		Initiator:              p.Sender,
+		Body:                   p.Message.Text,
+		CommandText:            p.Message.CommandText,
+		MessageID:              p.Message.MessageID,
+		ThreadID:               p.Message.Source.ThreadID,
+		ClaimToken:             p.ClaimToken,
+		MediaPendingSeconds:    p.MediaPendingSeconds,
+		PersistMessage:         p.PersistMessage,
+		HistoryBoundaryPending: p.HistoryBoundaryPending,
+		BeforeCommit:           p.BeforeCommit,
 	})
 	if err != nil {
 		return engine.StartSessionResult{}, err
 	}
 	return engine.StartSessionResult{
-		SessionID: result.SessionID,
-		BindingID: result.BindingID,
+		SessionID:     result.SessionID,
+		BindingID:     result.BindingID,
 		RouteRevision: result.RouteRevision,
-		Append: result.Append,
+		Append:        result.Append,
 	}, nil
 }
 

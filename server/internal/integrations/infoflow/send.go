@@ -92,10 +92,10 @@ func buildSendBody(target infoflowSendTarget, agentID, text string) (map[string]
 	return map[string]any{
 		"message": map[string]any{
 			"header": map[string]any{
-				"toid":   toID,
-				"totype": "GROUP",
+				"toid":    toID,
+				"totype":  "GROUP",
 				"msgtype": "TEXT",
-				"role":   "robot",
+				"role":    "robot",
 			},
 			"body": []map[string]any{{"type": "TEXT", "content": text}},
 		},

@@ -20,8 +20,8 @@ import (
 const BindingTokenTTL = 15 * time.Minute
 
 var (
-	ErrBindingTokenInvalid = errors.New("infoflow: binding token invalid or expired")
-	ErrBindingAlreadyAssigned = errors.New("infoflow: user id is already bound to a different user")
+	ErrBindingTokenInvalid       = errors.New("infoflow: binding token invalid or expired")
+	ErrBindingAlreadyAssigned    = errors.New("infoflow: user id is already bound to a different user")
 	ErrBindingNotWorkspaceMember = errors.New("infoflow: redeemer is not a workspace member")
 )
 

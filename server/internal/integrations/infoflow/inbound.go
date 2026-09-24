@@ -176,9 +176,19 @@ func addressedToBot(payload infoflowRaw, botUserID, eventType string) bool {
 			if typeName != "AT" {
 				continue
 			}
+			if botUserID == "" {
+				// No configured bot user id: the only mention that is
+				// unambiguously directed at the bot is an @all. Treating every
+				// named @ as addressed would ingest all group chatter into the
+				// agent, so stay conservative and require an explicit signal.
+				if atAll, _ := item["atall"].(bool); atAll {
+					return true
+				}
+				continue
+			}
 			names := []string{stringOrEmpty(item["name"]), stringOrEmpty(item["userid"]), stringOrEmpty(item["userId"]), stringOrEmpty(item["id"])}
 			for _, name := range names {
-				if name != "" && (botUserID == "" || strings.Contains(name, botUserID)) {
+				if name != "" && strings.Contains(name, botUserID) {
 					return true
 				}
 			}
