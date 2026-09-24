@@ -30,6 +30,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/integrations/channel/engine"
 	composiointeg "github.com/multica-ai/multica/server/internal/integrations/composio"
 	"github.com/multica-ai/multica/server/internal/integrations/dingtalk"
+	"github.com/multica-ai/multica/server/internal/integrations/infoflow"
 	"github.com/multica-ai/multica/server/internal/integrations/lark"
 	"github.com/multica-ai/multica/server/internal/integrations/slack"
 	"github.com/multica-ai/multica/server/internal/integrations/telegram"
@@ -916,6 +917,36 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		}
 	} else {
 		slog.Info("dingtalk integration disabled (MULTICA_DINGTALK_SECRET_KEY not set)")
+	}
+
+	// InfoFlow (如流) uses one long connection per BYO installation. The
+	// AppSecret is encrypted at rest and the integration is inert unless its
+	// dedicated deployment key is configured.
+	if infoflowKey, err := secretbox.LoadKey("MULTICA_INFOFLOW_SECRET_KEY"); err == nil {
+		box, err := secretbox.New(infoflowKey)
+		if err != nil {
+			slog.Error("infoflow: secretbox.New failed; integration disabled", "error", err)
+		} else {
+			infoflowClient := infoflow.NewClient(nil, "")
+			bindingSvc := infoflow.NewBindingTokenService(queries, pool)
+			h.InfoFlowBindingTokens = bindingSvc
+			channelRouter.Register(infoflow.TypeInfoFlow, infoflow.NewResolverSet(queries, pool))
+			infoflow.NewOutbound(queries, box.Open, infoflowClient, slog.Default()).Register(bus)
+			infoflow.Register(channelRegistry, infoflow.ChannelDeps{
+				Decrypt: box.Open,
+				Client:  infoflowClient,
+				Logger:  slog.Default(),
+			})
+			installSvc, installErr := infoflow.NewInstallService(queries, pool, box, slog.Default())
+			if installErr != nil {
+				slog.Error("infoflow: InstallService init failed; install disabled", "error", installErr)
+			} else {
+				h.InfoFlowInstall = installSvc
+			}
+			slog.Info("infoflow integration enabled (BYO per-installation long connection)")
+		}
+	} else {
+		slog.Info("infoflow integration disabled (MULTICA_INFOFLOW_SECRET_KEY not set)")
 	}
 
 	// WeCom smart-bot integration ("智能机器人" / aibot). Per-installation
@@ -1856,6 +1887,19 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/dingtalk/install/byo", h.RegisterDingTalkBYO)
 				})
 
+				// InfoFlow (如流) integration. Same member/admin split as Slack
+				// and DingTalk: listing is member-visible; install/revoke require
+				// workspace owner/admin at the route boundary.
+				r.Group(func(r chi.Router) {
+					r.Use(middleware.RequireWorkspaceMemberFromURL(queries, "id"))
+					r.Get("/infoflow/installations", h.ListInfoFlowInstallations)
+				})
+				r.Group(func(r chi.Router) {
+					r.Use(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner", "admin"))
+					r.Delete("/infoflow/installations/{installationId}", h.RevokeInfoFlowInstallation)
+					r.Post("/infoflow/install/byo", h.RegisterInfoFlowBYO)
+				})
+
 				// Telegram integration. Same admin/member split as Slack:
 				// listing is member-visible; install + revoke are admin-only.
 				r.Group(func(r chi.Router) {
@@ -1886,6 +1930,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		// DingTalk binding redemption is user-scoped for the same reason as
 		// Slack: the token is redeemed before workspace context is selected.
 		r.Post("/api/dingtalk/binding/redeem", h.RedeemDingTalkBindingToken)
+		// InfoFlow binding redemption is user-scoped for the same reason as
+		// Slack/DingTalk: the session provides the redeemer's Multica identity,
+		// while the token proves only that an InfoFlow user id requested binding.
+		r.Post("/api/infoflow/binding/redeem", h.RedeemInfoFlowBindingToken)
 		// WeCom smart-bot binding-token redemption. Same rationale as
 		// Lark/Slack: the session is the source of truth for the redeemer's
 		// Multica identity; the token only carries the WeCom userid to bind.

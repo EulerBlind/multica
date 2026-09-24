@@ -29,6 +29,7 @@ import (
 	composio "github.com/multica-ai/multica/server/internal/integrations/composio"
 	"github.com/multica-ai/multica/server/internal/integrations/dingtalk"
 	"github.com/multica-ai/multica/server/internal/integrations/ghsnapshot"
+	"github.com/multica-ai/multica/server/internal/integrations/infoflow"
 	"github.com/multica-ai/multica/server/internal/integrations/lark"
 	"github.com/multica-ai/multica/server/internal/integrations/slack"
 	"github.com/multica-ai/multica/server/internal/integrations/telegram"
@@ -333,6 +334,12 @@ type Handler struct {
 	DingTalkInstall *dingtalk.InstallService
 	// DingTalkBindingTokens mints and redeems the single-use account-link tokens.
 	DingTalkBindingTokens *dingtalk.BindingTokenService
+	// InfoFlowInstall owns the bring-your-own-app InfoFlow (如流) lifecycle. It
+	// is nil unless MULTICA_INFOFLOW_SECRET_KEY is configured.
+	InfoFlowInstall *infoflow.InstallService
+	// InfoFlowBindingTokens mints and redeems the single-use account-link tokens
+	// for InfoFlow senders.
+	InfoFlowBindingTokens *infoflow.BindingTokenService
 	// SlackHistory backs the agent-facing `multica chat history` command: it
 	// reads a chat session's bound Slack conversation on demand (MUL-3871). Nil
 	// unless Slack is configured; GetChatChannelHistory then reports "no channel
