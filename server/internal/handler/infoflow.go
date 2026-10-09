@@ -126,7 +126,7 @@ func (h *Handler) RegisterInfoFlowBYO(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		switch {
-		case errors.Is(err, infoflow.ErrInvalidApplicationID), errors.Is(err, infoflow.ErrInvalidAppKey), errors.Is(err, infoflow.ErrInvalidAppSecret), errors.Is(err, infoflow.ErrCredentialValidation):
+		case errors.Is(err, infoflow.ErrInvalidApplicationID), errors.Is(err, infoflow.ErrInvalidAppKey), errors.Is(err, infoflow.ErrInvalidAppSecret), errors.Is(err, infoflow.ErrInvalidBotUserID), errors.Is(err, infoflow.ErrCredentialValidation):
 			writeError(w, http.StatusBadRequest, err.Error())
 		case errors.Is(err, infoflow.ErrAppOwnedBySameWorkspace):
 			writeError(w, http.StatusConflict, "this InfoFlow application is already connected to another agent in this workspace — disconnect it there first, then connect it here")

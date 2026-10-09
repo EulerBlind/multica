@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"time"
 )
 
 // InfoFlow robot send paths. Group messages go through the robot endpoint;
@@ -89,13 +90,19 @@ func buildSendBody(target infoflowSendTarget, agentID, text string) (map[string]
 	if err != nil {
 		return nil, fmt.Errorf("infoflow: group id %q is not numeric: %w", target.ChatID, err)
 	}
+	agentIDNum, err := strconv.ParseInt(agentID, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("infoflow: agent id %q is not numeric: %w", agentID, err)
+	}
 	return map[string]any{
+		"agentid": agentIDNum,
 		"message": map[string]any{
 			"header": map[string]any{
-				"toid":    toID,
-				"totype":  "GROUP",
-				"msgtype": "TEXT",
-				"role":    "robot",
+				"toid":        toID,
+				"totype":      "GROUP",
+				"msgtype":     "TEXT",
+				"clientmsgid": time.Now().UnixMilli(),
+				"role":        "robot",
 			},
 			"body": []map[string]any{{"type": "TEXT", "content": text}},
 		},

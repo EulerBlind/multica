@@ -26,6 +26,7 @@ var (
 	ErrAppOwnedBySameWorkspace    = errors.New("infoflow: application is already connected to another agent in this workspace")
 	ErrAppOwnedByArchivedAgent    = errors.New("infoflow: application is connected to an archived agent in this workspace")
 	ErrInvalidApplicationID       = errors.New("infoflow: application id is required")
+	ErrInvalidBotUserID           = errors.New("infoflow: bot_user_id must not equal the application id")
 	ErrInvalidAppKey              = errors.New("infoflow: AppKey is required")
 	ErrInvalidAppSecret           = errors.New("infoflow: AppSecret is required")
 	ErrCredentialValidation       = errors.New("infoflow: could not validate credentials")
@@ -109,6 +110,9 @@ func (s *InstallService) RegisterBYO(ctx context.Context, p RegisterBYOParams) (
 	}
 	if appSecret == "" {
 		return db.ChannelInstallation{}, ErrInvalidAppSecret
+	}
+	if strings.TrimSpace(p.BotUserID) == applicationID {
+		return db.ChannelInstallation{}, ErrInvalidBotUserID
 	}
 	if s.tx == nil {
 		return db.ChannelInstallation{}, errors.New("infoflow: InstallService requires a transaction starter")

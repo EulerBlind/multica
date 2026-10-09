@@ -72,7 +72,10 @@ func IsPermissionNotGranted(err error) bool {
 	}
 	var apiErr *apiError
 	if errors.As(err, &apiErr) {
-		return apiErr.Code == errCodeAPINotAllowed
+		// 40000 covers several distinct business failures. Only the explicit
+		// "Api not allowed" text means the application lacks the permission;
+		// "lack param" is a request-shape bug and must stay a plain API error.
+		return apiErr.Code == errCodeAPINotAllowed && apiErr.Message == "Api not allowed"
 	}
 	return false
 }
@@ -267,7 +270,7 @@ func decodeBusinessError(path string, envelope businessEnvelope) error {
 		return nil
 	}
 	err := &apiError{Path: path, StatusCode: http.StatusOK, Code: inner.Errcode, Message: inner.Errmsg}
-	if inner.Errcode == errCodeAPINotAllowed {
+	if inner.Errcode == errCodeAPINotAllowed && inner.Errmsg == "Api not allowed" {
 		return fmt.Errorf("%w: %v", ErrPermissionNotGranted, err)
 	}
 	return err

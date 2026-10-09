@@ -113,6 +113,14 @@ func TestSendBodyValidation(t *testing.T) {
 	if body["message"] == nil {
 		t.Fatalf("unexpected body: %+v", body)
 	}
+	if body["agentid"] != int64(14534) {
+		t.Fatalf("group body missing top-level agentid: %+v", body["agentid"])
+	}
+	msg := body["message"].(map[string]any)
+	header := msg["header"].(map[string]any)
+	if _, ok := header["clientmsgid"]; !ok {
+		t.Fatalf("group header missing clientmsgid: %+v", header)
+	}
 	if got := messageIDFromSendResponse(map[string]any{"messageid": 42}); got != "42" {
 		t.Fatalf("message id: %q", got)
 	}
@@ -179,6 +187,19 @@ func TestOutboundHelpers(t *testing.T) {
 	}
 	if _, _, ok := taskAndSessionFromEvent(failed(map[string]any{})); ok {
 		t.Fatal("expected missing task id")
+	}
+}
+
+func TestRegisterBYOValidationRejectsBotUserIDEqualToAppID(t *testing.T) {
+	svc := &InstallService{}
+	_, err := svc.RegisterBYO(context.Background(), RegisterBYOParams{
+		ApplicationID: "14534",
+		AppKey:        "k",
+		AppSecret:     "s",
+		BotUserID:     "14534",
+	})
+	if !errors.Is(err, ErrInvalidBotUserID) {
+		t.Fatalf("expected ErrInvalidBotUserID, got %v", err)
 	}
 }
 
