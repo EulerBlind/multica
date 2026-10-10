@@ -11,6 +11,7 @@ describe("settings location", () => {
     ["tab=chat", { tab: "preferences", section: "chat", integration: null }],
     ["tab=labs", { tab: "workspace", section: null, integration: null }],
     ["tab=lark", { tab: "channels", section: null, integration: "lark" }],
+    ["tab=infoflow", { tab: "channels", section: null, integration: "infoflow" }],
     [
       "tab=integrations&integration=slack",
       { tab: "channels", section: null, integration: "slack" },
@@ -30,6 +31,14 @@ describe("settings location", () => {
     ],
   ])("resolves the retired %s entry", (search, expected) => {
     expect(resolve(search)).toEqual(expected);
+  });
+
+  it("routes the InfoFlow channel detail under Channels", () => {
+    expect(resolve("tab=channels&integration=infoflow")).toEqual({
+      tab: "channels",
+      section: null,
+      integration: "infoflow",
+    });
   });
 
   it("keeps server redirects from the GitHub App install working", () => {

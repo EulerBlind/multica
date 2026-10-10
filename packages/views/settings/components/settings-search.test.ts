@@ -5,6 +5,7 @@ import {
   searchSettings,
   type SettingsSearchEntry,
 } from "./settings-search";
+import { CHANNEL_INTEGRATIONS } from "./settings-navigation";
 
 const entries: SettingsSearchEntry[] = [
   { tab: "profile", title: "Profile" },
@@ -17,6 +18,7 @@ const entries: SettingsSearchEntry[] = [
   { tab: "workspace", anchor: "context", title: "Agent context" },
   { tab: "channels", integration: "slack", title: "Slack" },
   { tab: "channels", integration: "lark", title: "Lark" },
+  { tab: "channels", integration: "infoflow", title: "InfoFlow" },
 ];
 
 describe("searchSettings", () => {
@@ -39,6 +41,15 @@ describe("searchSettings", () => {
     ]);
     // Channels share a tab, so the detail page is part of the identity.
     expect(searchSettings(entries, "a").map((r) => r.title)).toContain("Lark");
+  });
+
+  it("indexes the InfoFlow channel under the Channels tab", () => {
+    // The real search index is built from CHANNEL_INTEGRATIONS, so membership
+    // there is what makes ?tab=channels&integration=infoflow searchable.
+    expect(CHANNEL_INTEGRATIONS).toContain("infoflow");
+    expect(searchSettings(entries, "infoflow").map((r) => r.integration)).toEqual([
+      "infoflow",
+    ]);
   });
 
   it("keeps the first entry for a duplicated location", () => {

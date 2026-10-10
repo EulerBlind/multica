@@ -41,6 +41,7 @@ vi.mock("./slack-tab", () => ({ SlackTab: () => <div>Slack detail</div> }));
 vi.mock("./dingtalk-tab", () => ({ DingTalkTab: () => <div>DingTalk detail</div> }));
 vi.mock("./wecom-tab", () => ({ WecomTab: () => <div>WeCom detail</div> }));
 vi.mock("./telegram-tab", () => ({ TelegramTab: () => <div>Telegram detail</div> }));
+vi.mock("./infoflow-tab", () => ({ InfoFlowTab: () => <div>InfoFlow detail</div> }));
 
 import { ChannelsTab } from "./channels-tab";
 
@@ -57,6 +58,9 @@ describe("ChannelsTab", () => {
     renderWithI18n(<ChannelsTab />);
 
     expect(screen.getByRole("link", { name: /Slack Connected/ })).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: /InfoFlow Connected/ }),
+    ).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /GitHub/ })).toBeNull();
     expect(screen.queryByRole("link", { name: /Composio/ })).toBeNull();
     expect(screen.queryByText("Slack detail")).toBeNull();

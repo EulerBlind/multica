@@ -132,7 +132,7 @@ func TestUnboundSenderIdentityIsChannelSpecific(t *testing.T) {
 		{
 			name:        "telegram still requires a binding",
 			channelType: channel.Type("telegram"),
-			set:         telegram.NewTelegramResolverSet(q, pool, nil, nil),
+			set:         telegram.NewTelegramResolverSet(q, pool, nil, nil, nil),
 			wantErr:     engine.ErrSenderUnbound,
 		},
 		{

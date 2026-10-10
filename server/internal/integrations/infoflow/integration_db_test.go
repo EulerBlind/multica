@@ -101,6 +101,13 @@ func (infoflowTestTasks) PromoteDeferredChannelIssueTask(context.Context, pgtype
 	return nil
 }
 
+// The Router applies the agent invocation policy before scheduling a run
+// (added upstream after this adapter was written); this stub admits everyone so
+// the persistence path under test is exercised.
+func (infoflowTestTasks) MemberMayInvokeAgent(context.Context, pgtype.UUID, pgtype.UUID) (bool, error) {
+	return true, nil
+}
+
 // infoflowTokenServer answers the two InfoFlow calls the install and outbound
 // paths make: the token mint and the group send.
 type infoflowSendRecorder struct {
