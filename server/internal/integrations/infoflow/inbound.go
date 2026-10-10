@@ -43,11 +43,10 @@ type infoflowRaw struct {
 // did not become a routed message so an operator can tell a genuine
 // misconfiguration (e.g. a missing bot_user_id) from ordinary group chatter.
 const (
-	dropReasonMalformed        = "malformed_payload"
-	dropReasonMissingSender    = "missing_sender"
-	dropReasonEmptyContent     = "empty_content"
-	dropReasonMissingGroupID   = "missing_group_id"
-	dropReasonUnaddressedGroup = "unaddressed_group_message"
+	dropReasonMalformed      = "malformed_payload"
+	dropReasonMissingSender  = "missing_sender"
+	dropReasonEmptyContent   = "empty_content"
+	dropReasonMissingGroupID = "missing_group_id"
 )
 
 func inboundFromPayload(raw json.RawMessage, appID, botUserID string) (channel.InboundMessage, bool) {
@@ -144,9 +143,11 @@ func normalizeGroupPayloadReason(payload infoflowRaw, botUserID string) (channel
 		AddressedToBot: addressedToBot(payload, botUserID, eventType),
 		Raw:            mustJSON(payload),
 	}
-	if !msg.AddressedToBot {
-		return msg, dropReasonUnaddressedGroup, false
-	}
+	// NOTE: an unaddressed group message is deliberately routed (ok=true). The
+	// engine owns that decision: it drops with drop_reason=not_addressed_in_group,
+	// writes the channel_inbound_audit row and runs the dedup gate. Deciding it
+	// here instead would silently remove that audit trail and bypass dedup, so
+	// this adapter only reports WHY it could not build a message at all.
 	return msg, "", true
 }
 

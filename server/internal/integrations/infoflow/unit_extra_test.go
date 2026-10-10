@@ -645,25 +645,16 @@ func TestOutboundSoftDegradesSingleChatPermissionDenied(t *testing.T) {
 	}
 }
 
-// W1: the receive loop must be able to name WHY a payload was not routed, so a
-// missing bot_user_id or an unaddressed group message is searchable instead of
-// looking like silence.
+// Drop reasons exist only for payloads the adapter cannot turn into a message.
+// An unaddressed group message is NOT one of them: it must normalize (ok=true)
+// so the engine keeps ownership of the drop — writing channel_inbound_audit and
+// running the dedup gate (N17 regression guard).
 func TestInboundDropReasons(t *testing.T) {
 	cases := []struct {
 		name string
 		raw  string
 		want string
 	}{
-		{
-			name: "unaddressed group message",
-			raw:  `{"groupid":"12572761","message":{"header":{"fromuserid":"u1","totype":"GROUP","msgtype":"TEXT","messageid":"m1"},"body":[{"type":"TEXT","content":"chat"}]}}`,
-			want: dropReasonUnaddressedGroup,
-		},
-		{
-			name: "group message addressing someone else",
-			raw:  `{"groupid":"12572761","message":{"header":{"fromuserid":"u1","totype":"GROUP","msgtype":"TEXT","messageid":"m2"},"body":[{"type":"AT","userid":"someone-else"},{"type":"TEXT","content":"hi"}]}}`,
-			want: dropReasonUnaddressedGroup,
-		},
 		{
 			name: "missing sender",
 			raw:  `{"groupid":"12572761","message":{"header":{"totype":"GROUP","msgtype":"TEXT","messageid":"m3"},"body":[{"type":"AT","userid":"bot"},{"type":"TEXT","content":"hi"}]}}`,
@@ -684,7 +675,7 @@ func TestInboundDropReasons(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			msg, reason, ok := inboundFromPayloadReason(json.RawMessage(tc.raw), "14534", "4105001274")
 			if ok {
-				t.Fatalf("expected drop, got message %+v", msg)
+				t.Fatalf("expected the adapter to refuse this payload, got %+v", msg)
 			}
 			if reason != tc.want {
 				t.Fatalf("drop reason = %q, want %q", reason, tc.want)
@@ -692,12 +683,42 @@ func TestInboundDropReasons(t *testing.T) {
 		})
 	}
 
-	// The happy path still routes and reports no reason.
+	// An addressed group message routes.
 	_, reason, ok := inboundFromPayloadReason(json.RawMessage(
 		`{"groupid":"12572761","message":{"header":{"fromuserid":"u1","totype":"GROUP","msgtype":"TEXT","messageid":"m5"},"body":[{"type":"AT","userid":"4105001274"},{"type":"TEXT","content":"hi"}]}}`),
 		"14534", "4105001274")
 	if !ok || reason != "" {
 		t.Fatalf("addressed group message should route: ok=%v reason=%q", ok, reason)
+	}
+}
+
+// N17 regression guard: an UNADDRESSED group message must still normalize and be
+// handed to the engine, so the engine can record channel_inbound_audit with
+// drop_reason=not_addressed_in_group and run the dedup gate. Deciding the drop
+// in the adapter would silently remove that audit trail.
+func TestUnaddressedGroupMessageStillReachesTheEngine(t *testing.T) {
+	const raw = `{"groupid":"12572761","message":{"header":{"fromuserid":"u1","totype":"GROUP","msgtype":"TEXT","messageid":"m-unaddressed"},"body":[{"type":"TEXT","content":"group chatter"}]}}`
+
+	msg, reason, ok := inboundFromPayloadReason(json.RawMessage(raw), "14534", "4105001274")
+	if !ok {
+		t.Fatalf("unaddressed group message must normalize for the engine, got ok=false reason=%q", reason)
+	}
+	if reason != "" {
+		t.Fatalf("no adapter-side drop reason expected, got %q", reason)
+	}
+	if msg.AddressedToBot {
+		t.Fatal("fixture must be unaddressed so the engine takes its not_addressed_in_group path")
+	}
+	if msg.Source.ChatType != channel.ChatTypeGroup || msg.Source.ChatID != "12572761" {
+		t.Fatalf("unexpected routing identity: %+v", msg.Source)
+	}
+	if msg.MessageID != "m-unaddressed" {
+		t.Fatalf("message id = %q, engine dedup keys on this", msg.MessageID)
+	}
+
+	// The plain accessor (used elsewhere) agrees.
+	if _, ok := inboundFromPayload(json.RawMessage(raw), "14534", "4105001274"); !ok {
+		t.Fatal("inboundFromPayload must agree that the message routes")
 	}
 }
 

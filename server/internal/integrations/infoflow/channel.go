@@ -87,17 +87,17 @@ func (c *infoflowChannel) Connect(ctx context.Context) error {
 			}
 			msg, dropReason, ok := inboundFromPayloadReason(raw, c.appID, c.botUserID)
 			if !ok {
-				// Name the reason and the routing coordinates so a silent
-				// "the bot ignores me" report can be traced to a cause: a group
-				// message that was not addressed to the bot, or a missing
-				// bot_user_id / sender / content. Not an error: ordinary group
-				// chatter lands here by design.
-				c.logger.InfoContext(ctx, "infoflow: inbound message not routed",
+				// The payload could not even be turned into a message (missing
+				// sender/content/group id, or malformed). Name the reason so a
+				// silent "the bot ignores me" report is traceable. Messages that
+				// DO normalize — including group messages not addressed to the
+				// bot — are routed on purpose: the engine owns that drop, so it
+				// records the audit row and runs the dedup gate.
+				c.logger.InfoContext(ctx, "infoflow: frame could not be normalized",
 					"drop_reason", dropReason,
 					"installation_id", c.appID,
-					"chat_id", msg.Source.ChatID,
 					"bot_user_id_configured", c.botUserID != "",
-					"hint", "a group message must @ the robot; set bot_user_id so named mentions are matched",
+					"hint", "check bot_user_id and the robot's message-receive configuration",
 				)
 				return nil
 			}

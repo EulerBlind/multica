@@ -23,9 +23,11 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -325,5 +327,202 @@ INSERT INTO channel_task_delivery (
 	}
 	if reinstalled.Status != "active" {
 		t.Fatalf("reinstalled status = %q", reinstalled.Status)
+	}
+}
+
+// TestInfoFlowDBUnaddressedGroupMessageIsAuditedAndDeduped locks the N17 fix:
+// an unaddressed group message must still reach the engine, which writes the
+// channel_inbound_audit row (drop_reason=not_addressed_in_group) and runs the
+// dedup gate, so a platform redelivery is recorded as duplicate.
+func TestInfoFlowDBUnaddressedGroupMessageIsAuditedAndDeduped(t *testing.T) {
+	pool := infoflowDB(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	queries := db.New(pool)
+	fx := dbfx.New(pool, "", "")
+	suffix := util.UUIDToString(dbid.NewV7())
+	fx.UserID = fx.User(t, "Owner", "infoflow-n17-"+suffix+"@multica.test")
+	fx.WorkspaceID = fx.Workspace(t, "InfoFlow N17", "infoflow-n17-"+suffix)
+	fx.Member(t, fx.WorkspaceID, fx.UserID, "owner")
+	runtimeID := fx.Runtime(t, "Runtime")
+	agentID := fx.Agent(t, "Agent", runtimeID)
+	fx.Cleanup(t, "DELETE FROM channel_installation WHERE workspace_id = $1", fx.WorkspaceID)
+
+	appID := "app-n17-" + suffix
+	srv, _ := infoflowTokenServer(t)
+	box, err := secretbox.New(bytes.Repeat([]byte{0x6B}, secretbox.KeySize))
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc, err := NewInstallService(queries, pool, box, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.http = srv.Client()
+	svc.apiBase = srv.URL
+
+	install, err := svc.RegisterBYO(ctx, RegisterBYOParams{
+		WorkspaceID:   util.MustParseUUID(fx.WorkspaceID),
+		AgentID:       util.MustParseUUID(agentID),
+		InitiatorID:   util.MustParseUUID(fx.UserID),
+		ApplicationID: appID,
+		AppKey:        "key-" + suffix,
+		AppSecret:     "secret-" + suffix,
+		BotUserID:     "bot-user",
+	})
+	if err != nil {
+		t.Fatalf("RegisterBYO: %v", err)
+	}
+	// No channel_user_binding row: the engine must still process the message.
+	router := engine.NewRouter(infoflowTestIssues{}, infoflowTestTasks{}, queries, engine.RouterConfig{})
+	router.Register(TypeInfoFlow, NewResolverSet(queries, pool, nil, nil))
+
+	groupID := "1257" + suffix[:6]
+	msgID := "msg-n17-" + suffix
+	inbound := channel.InboundMessage{
+		EventID:   msgID,
+		MessageID: msgID,
+		Type:      channel.MsgTypeText,
+		Text:      "group chatter, nobody addressed",
+		Source: channel.Source{
+			ChannelType: TypeInfoFlow,
+			ChatID:      groupID,
+			ChatType:    channel.ChatTypeGroup,
+			SenderID:    "user-" + suffix,
+		},
+		AddressedToBot: false,
+		Raw:            json.RawMessage(`{"agentid":"` + appID + `","groupid":"` + groupID + `"}`),
+	}
+	if err := router.Handle(ctx, inbound); err != nil {
+		t.Fatalf("router.Handle: %v", err)
+	}
+
+	// ① the audit row for the ENGINE's drop exists.
+	deadline := time.Now().Add(10 * time.Second)
+	var dropReason string
+	for {
+		err := pool.QueryRow(ctx, `
+SELECT drop_reason FROM channel_inbound_audit
+WHERE installation_id = $1 AND channel_message_id = $2
+ORDER BY received_at DESC LIMIT 1`, install.ID, msgID).Scan(&dropReason)
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no channel_inbound_audit row written for the unaddressed group message (B1 regression): %v", err)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if dropReason != "not_addressed_in_group" {
+		t.Fatalf("drop_reason = %q, want the engine enum not_addressed_in_group", dropReason)
+	}
+
+	// ② the dedup gate ran: a redelivery of the same message id is a duplicate.
+	if err := router.Handle(ctx, inbound); err != nil {
+		t.Fatalf("second Handle (redelivery) must be a no-op drop, got %v", err)
+	}
+	var duplicateAudits int
+	if err := pool.QueryRow(ctx, `
+SELECT count(*) FROM channel_inbound_audit
+WHERE installation_id = $1 AND channel_message_id = $2 AND drop_reason = 'duplicate'`,
+		install.ID, msgID).Scan(&duplicateAudits); err != nil {
+		t.Fatalf("count duplicate audits: %v", err)
+	}
+	if duplicateAudits == 0 {
+		t.Fatal("redelivery was not recorded as duplicate — the dedup gate was bypassed")
+	}
+
+	// And no agent task was enqueued for the unaddressed message.
+	var tasks int
+	if err := pool.QueryRow(ctx, `
+SELECT count(*) FROM agent_task_queue WHERE agent_id = $1`, util.MustParseUUID(agentID)).Scan(&tasks); err != nil {
+		t.Fatalf("count tasks: %v", err)
+	}
+	if tasks != 0 {
+		t.Fatalf("unaddressed group message must not enqueue a task, got %d", tasks)
+	}
+}
+
+// TestInfoFlowDBEngineDropLogIsSearchable proves N17 criterion ③: with the
+// engine's logger at debug level, the router's drop line carries
+// drop_reason=not_addressed_in_group together with the channel coordinates.
+// The engine is unchanged; this only observes its documented log.
+func TestInfoFlowDBEngineDropLogIsSearchable(t *testing.T) {
+	pool := infoflowDB(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	queries := db.New(pool)
+	fx := dbfx.New(pool, "", "")
+	suffix := util.UUIDToString(dbid.NewV7())
+	fx.UserID = fx.User(t, "Owner", "infoflow-n17log-"+suffix+"@multica.test")
+	fx.WorkspaceID = fx.Workspace(t, "InfoFlow N17 log", "infoflow-n17log-"+suffix)
+	fx.Member(t, fx.WorkspaceID, fx.UserID, "owner")
+	runtimeID := fx.Runtime(t, "Runtime")
+	agentID := fx.Agent(t, "Agent", runtimeID)
+	fx.Cleanup(t, "DELETE FROM channel_installation WHERE workspace_id = $1", fx.WorkspaceID)
+
+	appID := "app-n17log-" + suffix
+	srv, _ := infoflowTokenServer(t)
+	box, err := secretbox.New(bytes.Repeat([]byte{0x7C}, secretbox.KeySize))
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc, err := NewInstallService(queries, pool, box, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.http = srv.Client()
+	svc.apiBase = srv.URL
+	if _, err := svc.RegisterBYO(ctx, RegisterBYOParams{
+		WorkspaceID:   util.MustParseUUID(fx.WorkspaceID),
+		AgentID:       util.MustParseUUID(agentID),
+		InitiatorID:   util.MustParseUUID(fx.UserID),
+		ApplicationID: appID,
+		AppKey:        "key-" + suffix,
+		AppSecret:     "secret-" + suffix,
+		BotUserID:     "bot-user",
+	}); err != nil {
+		t.Fatalf("RegisterBYO: %v", err)
+	}
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	router := engine.NewRouter(infoflowTestIssues{}, infoflowTestTasks{}, queries, engine.RouterConfig{Logger: logger})
+	router.Register(TypeInfoFlow, NewResolverSet(queries, pool, nil, logger))
+
+	groupID := "1257" + suffix[:6]
+	msgID := "msg-n17log-" + suffix
+	if err := router.Handle(ctx, channel.InboundMessage{
+		EventID:        msgID,
+		MessageID:      msgID,
+		Type:           channel.MsgTypeText,
+		Text:           "nobody addressed the bot",
+		AddressedToBot: false,
+		Source: channel.Source{
+			ChannelType: TypeInfoFlow, ChatID: groupID, ChatType: channel.ChatTypeGroup, SenderID: "user-" + suffix,
+		},
+		Raw: json.RawMessage(`{"agentid":"` + appID + `","groupid":"` + groupID + `"}`),
+	}); err != nil {
+		t.Fatalf("router.Handle: %v", err)
+	}
+
+	logged := buf.String()
+	if !strings.Contains(logged, "channel router: dispatch outcome") {
+		t.Fatalf("engine drop log line missing:\n%s", logged)
+	}
+	for _, want := range []string{"drop_reason=not_addressed_in_group", "channel_type=infoflow", "event_id=" + msgID} {
+		if !strings.Contains(logged, want) {
+			t.Fatalf("engine drop log missing %q:\n%s", want, logged)
+		}
+	}
+	// The routing coordinates live on the audit row this drop wrote.
+	var auditChat string
+	if err := pool.QueryRow(ctx, `
+SELECT channel_chat_id FROM channel_inbound_audit
+WHERE channel_type='infoflow' AND channel_message_id=$1 AND drop_reason='not_addressed_in_group'`, msgID).Scan(&auditChat); err != nil {
+		t.Fatalf("audit row with chat id missing: %v", err)
+	}
+	if auditChat != groupID {
+		t.Fatalf("audit chat id = %q, want %q", auditChat, groupID)
 	}
 }
