@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/integrations/channel"
 	"github.com/multica-ai/multica/server/internal/integrations/channel/engine"
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
 )
@@ -25,10 +27,10 @@ const originInfoFlowChat = "infoflow_chat"
 // Replier delivers the verdict-driven replies (notably the binding prompt for
 // an unbound sender); media and typing are omitted until the InfoFlow SDK/API
 // surface for those capabilities is settled.
-func NewResolverSet(q *db.Queries, tx engine.TxStarter, replier engine.OutboundReplier) engine.ResolverSet {
+func NewResolverSet(q *db.Queries, tx engine.TxStarter, replier engine.OutboundReplier, logger *slog.Logger) engine.ResolverSet {
 	return engine.ResolverSet{
 		Installation: &installationResolver{q: q},
-		Identity:     &identityResolver{q: q},
+		Identity:     &identityResolver{q: q, logger: logger},
 		Dedup:        &deduper{q: q},
 		Session: &sessionBinder{session: engine.NewChatSession(q, tx, TypeInfoFlow, engine.SessionTitles{
 			Group:    "InfoFlow group",
@@ -131,18 +133,58 @@ func (r *installationResolver) ResolveInstallation(ctx context.Context, msg chan
 	}, nil
 }
 
-type identityResolver struct{ q *db.Queries }
+// identityQueries is the narrow slice of generated queries ResolveSender needs.
+// Keeping it an interface lets the identity ladder be unit-tested without a
+// database; *db.Queries satisfies it.
+type identityQueries interface {
+	GetChannelUserBindingByUserID(ctx context.Context, arg db.GetChannelUserBindingByUserIDParams) (db.ChannelUserBinding, error)
+	GetMemberByUserAndWorkspace(ctx context.Context, arg db.GetMemberByUserAndWorkspaceParams) (db.Member, error)
+}
 
+type identityResolver struct {
+	q      identityQueries
+	logger *slog.Logger
+}
+
+// ResolveSender maps an InfoFlow sender to the Multica user a run executes as.
+//
+// InfoFlow deliberately has NO binding gate (QIA-600 N11/N12): the product
+// requirement is that single- and group-chat messages reach the Agent without
+// a prior account-link step. The identity ladder is:
+//
+//  1. an explicit channel_user_binding, when one exists (optional enhancement,
+//     still re-checked for workspace membership);
+//  2. otherwise the installation's installer — the workspace member who
+//     connected the bot and therefore owns what it may act on.
+//
+// Only an installation whose installer is missing falls back to
+// ErrSenderUnbound; that is a data defect, not a product path. A binding that
+// points at a non-member stays ErrSenderNotMember, so a removed member cannot
+// keep driving the Agent through a stale binding.
+//
+// The fallback is logged with the installation/sender/chat coordinates
+// (D-N11-A option 1) so "who really sent this" stays answerable in ops logs
+// without widening the message tables.
 func (r *identityResolver) ResolveSender(ctx context.Context, inst engine.ResolvedInstallation, msg channel.InboundMessage) (engine.ResolvedIdentity, error) {
 	binding, err := r.q.GetChannelUserBindingByUserID(ctx, db.GetChannelUserBindingByUserIDParams{
 		InstallationID: inst.ID,
 		ChannelUserID:  msg.Source.SenderID,
 	})
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return engine.ResolvedIdentity{}, err
+		}
+		if !inst.InstallerUserID.Valid {
 			return engine.ResolvedIdentity{}, engine.ErrSenderUnbound
 		}
-		return engine.ResolvedIdentity{}, err
+		r.loggerFor().InfoContext(ctx, "infoflow: unbound sender resolved to the installation installer",
+			"installation_id", uuidOrEmpty(inst.ID),
+			"sender_id", msg.Source.SenderID,
+			"chat_type", string(msg.Source.ChatType),
+			"chat_id", msg.Source.ChatID,
+			"identity_source", "installer_fallback",
+		)
+		return engine.ResolvedIdentity{UserID: inst.InstallerUserID}, nil
 	}
 	if _, err := r.q.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{
 		UserID:      binding.MulticaUserID,
@@ -154,6 +196,20 @@ func (r *identityResolver) ResolveSender(ctx context.Context, inst engine.Resolv
 		return engine.ResolvedIdentity{}, err
 	}
 	return engine.ResolvedIdentity{UserID: binding.MulticaUserID}, nil
+}
+
+func (r *identityResolver) loggerFor() *slog.Logger {
+	if r.logger != nil {
+		return r.logger
+	}
+	return slog.Default()
+}
+
+func uuidOrEmpty(id pgtype.UUID) string {
+	if !id.Valid {
+		return ""
+	}
+	return util.UUIDToString(id)
 }
 
 type deduper struct{ q *db.Queries }

@@ -220,7 +220,7 @@ VALUES ($1, 9000001, 'infoflow origin', 'backlog', 'none', $2, 'member', 'infofl
 
 	// Inbound through the REAL Router + shared chat-session service.
 	router := engine.NewRouter(infoflowTestIssues{}, infoflowTestTasks{}, queries, engine.RouterConfig{})
-	router.Register(TypeInfoFlow, NewResolverSet(queries, pool, nil))
+	router.Register(TypeInfoFlow, NewResolverSet(queries, pool, nil, nil))
 
 	msgID := "msg-" + suffix
 	inbound := channel.InboundMessage{

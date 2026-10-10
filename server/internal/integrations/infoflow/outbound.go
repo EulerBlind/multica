@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/internal/integrations/channel"
 	"github.com/multica-ai/multica/server/internal/integrations/channel/engine"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -112,10 +113,28 @@ func (o *Outbound) processEvent(ctx context.Context, e events.Event) error {
 		return fmt.Errorf("decode infoflow credentials: %w", err)
 	}
 	s := &sender{client: o.client, appKey: creds.AppKey, appSecret: creds.AppSecret, agentID: creds.AgentID}
-	if _, err := s.sendText(ctx, outboundTarget(binding), content); err != nil {
-		return fmt.Errorf("post infoflow reply: %w", err)
+	target := outboundTarget(binding)
+	_, sendErr := s.sendText(ctx, target, content)
+	if sendErr == nil {
+		return nil
 	}
-	return nil
+	// A single-chat reply depends on /app/message/send, which deployments may
+	// not have been granted yet. That is a known capability gap, not a delivery
+	// fault: log it once with actionable fields and drop the message instead of
+	// retrying (a retry cannot succeed until the platform grants the API) or
+	// escalating it to a generic failure that would page for every reply.
+	if target.ChatType == string(channel.ChatTypeP2P) && IsPermissionNotGranted(sendErr) {
+		o.logger.WarnContext(ctx, "infoflow outbound: single-chat reply skipped (application lacks /app/message/send)",
+			"error", sendErr,
+			"error_kind", "permission_not_granted",
+			"installation_id", uuidOrEmpty(inst.ID),
+			"chat_type", string(channel.ChatTypeP2P),
+			"chat_id", target.ChatID,
+			"action", "ask the InfoFlow admin to grant /app/message/send for this application",
+		)
+		return nil
+	}
+	return fmt.Errorf("post infoflow reply: %w", sendErr)
 }
 
 func bindingFromTaskDelivery(delivery db.ChannelTaskDelivery) db.ChannelChatSessionBinding {

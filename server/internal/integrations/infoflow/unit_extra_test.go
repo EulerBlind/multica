@@ -572,3 +572,75 @@ func TestParseFramePayloadErrors(t *testing.T) {
 		t.Fatalf("valid payload: %v %v", raw, err)
 	}
 }
+
+// singleChatOutboundQueries drives Outbound.processEvent for a p2p delivery.
+type singleChatOutboundQueries struct {
+	installation db.ChannelInstallation
+	delivery     db.ChannelTaskDelivery
+}
+
+func (f singleChatOutboundQueries) ListChatInputMessages(context.Context, pgtype.UUID) ([]db.ChatMessage, error) {
+	return nil, nil
+}
+func (f singleChatOutboundQueries) GetAgentTask(context.Context, pgtype.UUID) (db.AgentTaskQueue, error) {
+	return db.AgentTaskQueue{}, nil
+}
+func (f singleChatOutboundQueries) TaskHasChannelIngestedMessages(context.Context, pgtype.UUID) (bool, error) {
+	return true, nil
+}
+func (f singleChatOutboundQueries) GetChannelTaskDelivery(context.Context, pgtype.UUID) (db.ChannelTaskDelivery, error) {
+	return f.delivery, nil
+}
+func (f singleChatOutboundQueries) GetChannelInstallation(context.Context, db.GetChannelInstallationParams) (db.ChannelInstallation, error) {
+	return f.installation, nil
+}
+
+// A p2p reply that fails with 40000 "Api not allowed" is a known capability gap
+// (the platform has not granted /app/message/send). It must be swallowed with a
+// warning, not surfaced as a delivery error that retries forever.
+func TestOutboundSoftDegradesSingleChatPermissionDenied(t *testing.T) {
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/auth/app_access_token":
+			_, _ = w.Write([]byte(`{"code":"ok","data":{"app_access_token":"at_1","expire":7200}}`))
+		case "/app/message/send":
+			calls++
+			_, _ = w.Write([]byte(`{"code":"ok","data":{"errcode":40000,"errmsg":"Api not allowed"}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	cfg, err := json.Marshal(installConfig{
+		AppID: "14534", AppKey: "k", AppSecretEncrypted: base64.StdEncoding.EncodeToString([]byte("s")), AgentID: "14534",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bindingCfg, err := json.Marshal(infoflowBindingConfig{ChatType: string(channel.ChatTypeP2P), ChatID: "u1", SenderID: "u1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := singleChatOutboundQueries{
+		installation: db.ChannelInstallation{Status: "active", Config: cfg},
+		delivery: db.ChannelTaskDelivery{
+			ChannelType: string(TypeInfoFlow), ChatType: string(channel.ChatTypeP2P),
+			ChannelChatID: "u1", Config: bindingCfg,
+		},
+	}
+	o := NewOutbound(q, nil, NewClient(srv.Client(), srv.URL), nil)
+	err = o.processEvent(context.Background(), events.Event{
+		Type:          protocol.EventChatDone,
+		TaskID:        "11111111-1111-1111-1111-111111111111",
+		ChatSessionID: "22222222-2222-2222-2222-222222222222",
+		Payload:       protocol.ChatDonePayload{Content: "hi"},
+	})
+	if err != nil {
+		t.Fatalf("permission-denied single-chat reply must soft-degrade, got %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("expected exactly one send attempt (no retry), got %d", calls)
+	}
+}

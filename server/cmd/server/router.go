@@ -937,7 +937,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				AppURL:  appURLFromEnv(),
 				Logger:  slog.Default(),
 			})
-			channelRouter.Register(infoflow.TypeInfoFlow, infoflow.NewResolverSet(queries, pool, replier))
+			channelRouter.Register(infoflow.TypeInfoFlow, infoflow.NewResolverSet(queries, pool, replier, slog.Default()))
 			infoflow.NewOutbound(queries, box.Open, infoflowClient, slog.Default()).Register(bus)
 			infoflow.Register(channelRegistry, infoflow.ChannelDeps{
 				Decrypt: box.Open,
