@@ -644,3 +644,79 @@ func TestOutboundSoftDegradesSingleChatPermissionDenied(t *testing.T) {
 		t.Fatalf("expected exactly one send attempt (no retry), got %d", calls)
 	}
 }
+
+// W1: the receive loop must be able to name WHY a payload was not routed, so a
+// missing bot_user_id or an unaddressed group message is searchable instead of
+// looking like silence.
+func TestInboundDropReasons(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{
+			name: "unaddressed group message",
+			raw:  `{"groupid":"12572761","message":{"header":{"fromuserid":"u1","totype":"GROUP","msgtype":"TEXT","messageid":"m1"},"body":[{"type":"TEXT","content":"chat"}]}}`,
+			want: dropReasonUnaddressedGroup,
+		},
+		{
+			name: "group message addressing someone else",
+			raw:  `{"groupid":"12572761","message":{"header":{"fromuserid":"u1","totype":"GROUP","msgtype":"TEXT","messageid":"m2"},"body":[{"type":"AT","userid":"someone-else"},{"type":"TEXT","content":"hi"}]}}`,
+			want: dropReasonUnaddressedGroup,
+		},
+		{
+			name: "missing sender",
+			raw:  `{"groupid":"12572761","message":{"header":{"totype":"GROUP","msgtype":"TEXT","messageid":"m3"},"body":[{"type":"AT","userid":"bot"},{"type":"TEXT","content":"hi"}]}}`,
+			want: dropReasonMissingSender,
+		},
+		{
+			name: "empty content",
+			raw:  `{"groupid":"12572761","message":{"header":{"fromuserid":"u1","totype":"GROUP","msgtype":"TEXT","messageid":"m4"},"body":[]}}`,
+			want: dropReasonEmptyContent,
+		},
+		{
+			name: "malformed payload",
+			raw:  `{`,
+			want: dropReasonMalformed,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			msg, reason, ok := inboundFromPayloadReason(json.RawMessage(tc.raw), "14534", "4105001274")
+			if ok {
+				t.Fatalf("expected drop, got message %+v", msg)
+			}
+			if reason != tc.want {
+				t.Fatalf("drop reason = %q, want %q", reason, tc.want)
+			}
+		})
+	}
+
+	// The happy path still routes and reports no reason.
+	_, reason, ok := inboundFromPayloadReason(json.RawMessage(
+		`{"groupid":"12572761","message":{"header":{"fromuserid":"u1","totype":"GROUP","msgtype":"TEXT","messageid":"m5"},"body":[{"type":"AT","userid":"4105001274"},{"type":"TEXT","content":"hi"}]}}`),
+		"14534", "4105001274")
+	if !ok || reason != "" {
+		t.Fatalf("addressed group message should route: ok=%v reason=%q", ok, reason)
+	}
+}
+
+// S1: the replier's failure fields carry the same filterable keys as outbound.
+func TestReplyFailureFields(t *testing.T) {
+	inst := replierInstallation(t, nil)
+	msg := channel.InboundMessage{Source: channel.Source{ChatType: channel.ChatTypeP2P, ChatID: "u1", SenderID: "u1"}}
+	fields := replyFailureFields(inst, msg, errors.New("boom"))
+	joined := make(map[string]any)
+	for i := 0; i+1 < len(fields); i += 2 {
+		key, _ := fields[i].(string)
+		joined[key] = fields[i+1]
+	}
+	for _, key := range []string{"error", "error_kind", "installation_id", "chat_type", "chat_id", "action"} {
+		if _, ok := joined[key]; !ok {
+			t.Fatalf("missing log field %q in %v", key, fields)
+		}
+	}
+	if joined["error_kind"] != "delivery_failed" {
+		t.Fatalf("error_kind = %v, want delivery_failed", joined["error_kind"])
+	}
+}

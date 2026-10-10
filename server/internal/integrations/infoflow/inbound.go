@@ -39,10 +39,28 @@ type infoflowRaw struct {
 // long connection because the platform service itself does not reliably carry
 // the application id in every event. botUserID is used to classify group
 // @mentions.
+// Drop reasons reported by inboundFromPayloadReason. They name WHY a payload
+// did not become a routed message so an operator can tell a genuine
+// misconfiguration (e.g. a missing bot_user_id) from ordinary group chatter.
+const (
+	dropReasonMalformed        = "malformed_payload"
+	dropReasonMissingSender    = "missing_sender"
+	dropReasonEmptyContent     = "empty_content"
+	dropReasonMissingGroupID   = "missing_group_id"
+	dropReasonUnaddressedGroup = "unaddressed_group_message"
+)
+
 func inboundFromPayload(raw json.RawMessage, appID, botUserID string) (channel.InboundMessage, bool) {
+	msg, _, ok := inboundFromPayloadReason(raw, appID, botUserID)
+	return msg, ok
+}
+
+// inboundFromPayloadReason is inboundFromPayload plus the drop reason, used by
+// the receive loop to log actionable diagnostics (N15 W1).
+func inboundFromPayloadReason(raw json.RawMessage, appID, botUserID string) (channel.InboundMessage, string, bool) {
 	var payload infoflowRaw
 	if err := json.Unmarshal(raw, &payload); err != nil {
-		return channel.InboundMessage{}, false
+		return channel.InboundMessage{}, dropReasonMalformed, false
 	}
 	rawAppID := appID
 	if payload.AppID != nil {
@@ -50,9 +68,16 @@ func inboundFromPayload(raw json.RawMessage, appID, botUserID string) (channel.I
 	}
 	payload.AppID = rawAppID
 	if isGroupPayload(payload) {
-		return normalizeGroupPayload(payload, botUserID)
+		return normalizeGroupPayloadReason(payload, botUserID)
 	}
-	return normalizePrivatePayload(payload)
+	msg, ok := normalizePrivatePayload(payload)
+	if !ok {
+		if strings.TrimSpace(payload.FromUserID) == "" {
+			return channel.InboundMessage{}, dropReasonMissingSender, false
+		}
+		return channel.InboundMessage{}, dropReasonEmptyContent, false
+	}
+	return msg, "", true
 }
 
 func isGroupPayload(payload infoflowRaw) bool {
@@ -82,25 +107,33 @@ func normalizePrivatePayload(payload infoflowRaw) (channel.InboundMessage, bool)
 }
 
 func normalizeGroupPayload(payload infoflowRaw, botUserID string) (channel.InboundMessage, bool) {
+	msg, _, ok := normalizeGroupPayloadReason(payload, botUserID)
+	return msg, ok
+}
+
+func normalizeGroupPayloadReason(payload infoflowRaw, botUserID string) (channel.InboundMessage, string, bool) {
 	h := payload.Message.Header
 	groupID := anyString(payload.GroupID)
 	if groupID == "" {
 		groupID = anyString(h.ToID)
 	}
 	senderID := strings.TrimSpace(h.FromUserID)
-	if groupID == "" || senderID == "" {
-		return channel.InboundMessage{}, false
+	if groupID == "" {
+		return channel.InboundMessage{}, dropReasonMissingGroupID, false
+	}
+	if senderID == "" {
+		return channel.InboundMessage{}, dropReasonMissingSender, false
 	}
 	text := flattenGroupText(payload.Message.Body)
 	if strings.TrimSpace(text) == "" && !containsAT(payload.Message.Body) {
-		return channel.InboundMessage{}, false
+		return channel.InboundMessage{}, dropReasonEmptyContent, false
 	}
 	eventType := "MESSAGE_RECEIVE"
 	if payload.EventType != "" {
 		eventType = payload.EventType
 	}
 	msgID := anyString(h.MessageID)
-	return channel.InboundMessage{
+	msg := channel.InboundMessage{
 		EventID:        msgID,
 		MessageID:      msgID,
 		Source:         channel.Source{ChannelType: TypeInfoFlow, ChatID: groupID, ChatType: channel.ChatTypeGroup, SenderID: senderID},
@@ -110,7 +143,11 @@ func normalizeGroupPayload(payload infoflowRaw, botUserID string) (channel.Inbou
 		ReplyTo:        groupReplyTo(payload.Message),
 		AddressedToBot: addressedToBot(payload, botUserID, eventType),
 		Raw:            mustJSON(payload),
-	}, true
+	}
+	if !msg.AddressedToBot {
+		return msg, dropReasonUnaddressedGroup, false
+	}
+	return msg, "", true
 }
 
 func flattenPrivateText(payload infoflowRaw) string {

@@ -173,6 +173,19 @@ func (s *InstallService) RegisterBYO(ctx context.Context, p RegisterBYOParams) (
 		return db.ChannelInstallation{}, fmt.Errorf("infoflow: reclaim dead installation: %w", err)
 	}
 
+	if strings.TrimSpace(p.BotUserID) == "" {
+		// Not a hard requirement: with no bot_user_id a group @ mention can only
+		// be recognized via an explicit @all, so named mentions will be dropped
+		// as unaddressed. Log it at install time so the misconfiguration is
+		// discoverable instead of showing up later as "the bot ignores me".
+		s.loggerFor().WarnContext(ctx, "infoflow: installation has no bot_user_id; group @ mentions will not be recognized",
+			"installation_app_id", applicationID,
+			"workspace_id", uuidOrEmpty(p.WorkspaceID),
+			"agent_id", uuidOrEmpty(p.AgentID),
+			"action", "set bot_user_id to the robot's own InfoFlow user id (e.g. 4105001274) so group @ mentions can be matched",
+		)
+	}
+
 	row, err := qtx.UpsertChannelInstallationByAppID(ctx, db.UpsertChannelInstallationByAppIDParams{
 		WorkspaceID:     p.WorkspaceID,
 		AgentID:         p.AgentID,
@@ -254,6 +267,13 @@ func (s *InstallService) ownerConflictErr(ctx context.Context, requestingWorkspa
 	default:
 		return ErrAppOwnedBySameWorkspace
 	}
+}
+
+func (s *InstallService) loggerFor() *slog.Logger {
+	if s.logger != nil {
+		return s.logger
+	}
+	return slog.Default()
 }
 
 func (s *InstallService) ListByWorkspace(ctx context.Context, workspaceID pgtype.UUID) ([]db.ChannelInstallation, error) {

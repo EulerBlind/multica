@@ -108,32 +108,32 @@ func (r *OutboundReplier) Reply(ctx context.Context, inst engine.ResolvedInstall
 	case engine.OutcomeNeedsBinding:
 		if err := r.sendBindingPrompt(ctx, inst, msg, res); err != nil {
 			r.logger.WarnContext(ctx, "infoflow replier: binding prompt failed",
-				"installation_id", util.UUIDToString(inst.ID), "error", err)
+				replyFailureFields(inst, msg, err)...)
 		}
 	case engine.OutcomeAgentOffline:
 		if err := r.post(ctx, inst, msg, agentOfflineText); err != nil {
 			r.logger.WarnContext(ctx, "infoflow replier: offline notice failed",
-				"installation_id", util.UUIDToString(inst.ID), "error", err)
+				replyFailureFields(inst, msg, err)...)
 		}
 	case engine.OutcomeAgentArchived:
 		if err := r.post(ctx, inst, msg, agentArchivedText); err != nil {
 			r.logger.WarnContext(ctx, "infoflow replier: archived notice failed",
-				"installation_id", util.UUIDToString(inst.ID), "error", err)
+				replyFailureFields(inst, msg, err)...)
 		}
 	case engine.OutcomeFreshPending:
 		if err := r.post(ctx, inst, msg, freshPendingText); err != nil {
 			r.logger.WarnContext(ctx, "infoflow replier: fresh-start confirmation failed",
-				"installation_id", util.UUIDToString(inst.ID), "error", err)
+				replyFailureFields(inst, msg, err)...)
 		}
 	case engine.OutcomeChatStarted:
 		if err := r.post(ctx, inst, msg, chatStartedText); err != nil {
 			r.logger.WarnContext(ctx, "infoflow replier: new-chat confirmation failed",
-				"installation_id", util.UUIDToString(inst.ID), "error", err)
+				replyFailureFields(inst, msg, err)...)
 		}
 	case engine.OutcomeIssueUsage:
 		if err := r.post(ctx, inst, msg, issueUsageText); err != nil {
 			r.logger.WarnContext(ctx, "infoflow replier: issue usage reply failed",
-				"installation_id", util.UUIDToString(inst.ID), "error", err)
+				replyFailureFields(inst, msg, err)...)
 		}
 	case engine.OutcomeIngested:
 		if res.IssueID.Valid {
@@ -143,17 +143,44 @@ func (r *OutboundReplier) Reply(ctx context.Context, inst engine.ResolvedInstall
 			}
 			if err := r.post(ctx, inst, msg, text); err != nil {
 				r.logger.WarnContext(ctx, "infoflow replier: issue outcome reply failed",
-					"installation_id", util.UUIDToString(inst.ID), "error", err)
+					replyFailureFields(inst, msg, err)...)
 			}
 		}
 	case engine.OutcomeDropped:
 		if text := droppedReplyText(res, msg); text != "" {
 			if err := r.post(ctx, inst, msg, text); err != nil {
 				r.logger.WarnContext(ctx, "infoflow replier: drop refusal failed",
-					"installation_id", util.UUIDToString(inst.ID), "error", err)
+					replyFailureFields(inst, msg, err)...)
 			}
 		}
 	}
+}
+
+// replyFailureFields is the shared structured shape for an outbound failure,
+// kept aligned with outbound.go's single-chat degrade log so operators can
+// filter either path by the same keys (N13 S1).
+func replyFailureFields(inst engine.ResolvedInstallation, msg channel.InboundMessage, err error) []any {
+	chatType := string(msg.Source.ChatType)
+	if chatType == "" {
+		chatType = string(channel.ChatTypeP2P)
+	}
+	return []any{
+		"error", err,
+		"error_kind", errorKindOf(err),
+		"installation_id", util.UUIDToString(inst.ID),
+		"chat_type", chatType,
+		"chat_id", msg.Source.ChatID,
+		"action", "verify the InfoFlow application grants for this API and the agent's installation status",
+	}
+}
+
+// errorKindOf classifies an outbound failure for log filtering. It only labels;
+// it never changes control flow.
+func errorKindOf(err error) string {
+	if IsPermissionNotGranted(err) {
+		return "permission_not_granted"
+	}
+	return "delivery_failed"
 }
 
 func (r *OutboundReplier) sendBindingPrompt(ctx context.Context, inst engine.ResolvedInstallation, msg channel.InboundMessage, res engine.Result) error {

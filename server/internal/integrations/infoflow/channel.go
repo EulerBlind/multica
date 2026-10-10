@@ -85,9 +85,20 @@ func (c *infoflowChannel) Connect(ctx context.Context) error {
 				c.logger.InfoContext(ctx, "infoflow: dropped non-payload frame", "error", err)
 				return nil
 			}
-			msg, ok := inboundFromPayload(raw, c.appID, c.botUserID)
+			msg, dropReason, ok := inboundFromPayloadReason(raw, c.appID, c.botUserID)
 			if !ok {
-				c.logger.InfoContext(ctx, "infoflow: dropped unsupported inbound message")
+				// Name the reason and the routing coordinates so a silent
+				// "the bot ignores me" report can be traced to a cause: a group
+				// message that was not addressed to the bot, or a missing
+				// bot_user_id / sender / content. Not an error: ordinary group
+				// chatter lands here by design.
+				c.logger.InfoContext(ctx, "infoflow: inbound message not routed",
+					"drop_reason", dropReason,
+					"installation_id", c.appID,
+					"chat_id", msg.Source.ChatID,
+					"bot_user_id_configured", c.botUserID != "",
+					"hint", "a group message must @ the robot; set bot_user_id so named mentions are matched",
+				)
 				return nil
 			}
 			return c.handler(ctx, msg)
