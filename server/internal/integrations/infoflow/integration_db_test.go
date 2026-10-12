@@ -1032,6 +1032,188 @@ INSERT INTO channel_task_delivery (
 	}
 }
 
+// TestInfoFlowDBGroupReplyChunksAndFallsBack is the N48 closure: a long agent
+// reply is split into ordered batches that all reach the group endpoint (with
+// the AT mention on the first batch only), and a send failure produces a
+// user-visible fallback notice instead of silence.
+func TestInfoFlowDBGroupReplyChunksAndFallsBack(t *testing.T) {
+	pool := infoflowDB(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	queries := db.New(pool)
+	fx := dbfx.New(pool, "", "")
+	suffix := util.UUIDToString(dbid.NewV7())
+	fx.UserID = fx.User(t, "Owner", "infoflow-n48-"+suffix+"@multica.test")
+	fx.WorkspaceID = fx.Workspace(t, "InfoFlow N48", "infoflow-n48-"+suffix)
+	fx.Member(t, fx.WorkspaceID, fx.UserID, "owner")
+	runtimeID := fx.Runtime(t, "Runtime")
+	agentID := fx.Agent(t, "Agent", runtimeID)
+	fx.Cleanup(t, "DELETE FROM channel_installation WHERE workspace_id = $1", fx.WorkspaceID)
+
+	appID := "145" + numericSuffix(suffix)
+	const botUserID = "4105001274"
+
+	// Fake gateway: tokens, memberList, and group send that FAILS the first N
+	// sends with 40061 and records every body.
+	var mu sync.Mutex
+	var bodies []string
+	failFirst := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/auth/app_access_token":
+			_, _ = w.Write([]byte(`{"code":"ok","data":{"app_access_token":"at_n48","expire":7200}}`))
+		case pathGroupMemberList:
+			_, _ = w.Write([]byte(`{"code":"ok","data":{"data":{"agentInfoList":[]}}}`))
+		case pathSendGroup:
+			buf, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+			mu.Lock()
+			bodies = append(bodies, string(buf))
+			fail := len(bodies) <= failFirst
+			mu.Unlock()
+			if fail {
+				_, _ = w.Write([]byte(`{"code":"ok","data":{"errcode":40061,"errmsg":"message text length exceed limit"}}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"code":"ok","data":{"data":{"messageid":"m48"}}}`))
+		default:
+			_, _ = w.Write([]byte(`{"code":"ok","data":{}}`))
+		}
+	}))
+	defer srv.Close()
+
+	box, err := secretbox.New(bytes.Repeat([]byte{0x4E}, secretbox.KeySize))
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc, err := NewInstallService(queries, pool, box, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.http = srv.Client()
+	svc.apiBase = srv.URL
+	install, err := svc.RegisterBYO(ctx, RegisterBYOParams{
+		WorkspaceID:   util.MustParseUUID(fx.WorkspaceID),
+		AgentID:       util.MustParseUUID(agentID),
+		InitiatorID:   util.MustParseUUID(fx.UserID),
+		ApplicationID: appID,
+		AppKey:        "key-" + suffix,
+		AppSecret:     "secret-" + suffix,
+		BotUserID:     botUserID,
+	})
+	if err != nil {
+		t.Fatalf("RegisterBYO: %v", err)
+	}
+
+	groupID := "1257" + numericSuffix(suffix)
+	sender := "alice-" + suffix
+	bindingID := util.UUIDToString(dbid.NewV7())
+	sessionID := util.UUIDToString(dbid.NewV7())
+	cfg := `{"chat_type":"group","chat_id":"` + groupID + `","sender_id":"` + sender + `","mention_user_id":"` + sender + `"}`
+	// A minimal chat_session + binding so the session id is valid for the event.
+	if _, err := pool.Exec(ctx, `INSERT INTO chat_session (id, workspace_id, agent_id, title, creator_id)
+VALUES ($1, $2, $3, 'n48', $4)`, sessionID, fx.WorkspaceID, agentID, fx.UserID); err != nil {
+		t.Fatalf("insert chat_session: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO channel_chat_session_binding (id, chat_session_id, installation_id, channel_type, channel_chat_id, chat_type, config)
+VALUES ($1, $2, $3, 'infoflow', $4, 'group', $5)`,
+		bindingID, sessionID, util.UUIDToString(install.ID), groupID+":"+sender, cfg); err != nil {
+		t.Fatalf("insert binding: %v", err)
+	}
+
+	runOutbound := func(content string) error {
+		taskID := fx.Task(t, agentID, dbfx.Cols{
+			"status":          "completed",
+			"chat_session_id": sessionID,
+			"runtime_id":      runtimeID,
+		})
+		if _, err := pool.Exec(ctx, `
+INSERT INTO channel_task_delivery (task_id, binding_id, installation_id, channel_type, channel_chat_id, chat_type,
+  channel_message_id, channel_sender_id, route_revision, config)
+VALUES ($1,$2,$3,'infoflow',$4,'group','m48',$5,0,$6)`,
+			taskID, bindingID, util.UUIDToString(install.ID), groupID+":"+sender, sender, cfg); err != nil {
+			t.Fatalf("insert delivery: %v", err)
+		}
+		bus := events.New()
+		outbound := NewOutbound(queries, box.Open, NewClient(srv.Client(), srv.URL), nil).WithAppURL("https://app.example")
+		outbound.Register(bus)
+		bus.Publish(events.Event{
+			Type:          protocol.EventChatDone,
+			TaskID:        taskID,
+			ChatSessionID: sessionID,
+			Payload:       protocol.ChatDonePayload{TaskID: taskID, ChatSessionID: sessionID, Content: content},
+		})
+		return nil
+	}
+
+	// Long reply → multiple ordered batches, AT on batch 0 only.
+	long := strings.Repeat("段落line内容 ", 400) // > 1500 runes
+	_ = runOutbound(long)
+	mu.Lock()
+	longBodies := append([]string(nil), bodies...)
+	mu.Unlock()
+	if len(longBodies) < 2 {
+		t.Fatalf("long reply produced %d send(s), want >= 2 batches", len(longBodies))
+	}
+	var rebuilt strings.Builder
+	for i, b := range longBodies {
+		var parsed map[string]any
+		if err := json.Unmarshal([]byte(b), &parsed); err != nil {
+			t.Fatalf("decode body %d: %v", i, err)
+		}
+		msg := parsed["message"].(map[string]any)
+		header := msg["header"].(map[string]any)
+		if fmt.Sprint(header["toid"]) != groupID {
+			t.Fatalf("batch %d toid = %v, want the real group id %s", i, header["toid"], groupID)
+		}
+		for _, e := range msg["body"].([]any) {
+			el := e.(map[string]any)
+			if el["type"] == "AT" && i != 0 {
+				t.Fatalf("batch %d carries an AT; the mention must ride only the first batch", i)
+			}
+			if el["type"] == "TEXT" {
+				rebuilt.WriteString(el["content"].(string))
+			}
+		}
+	}
+	if got := rebuilt.String(); got != long {
+		t.Fatalf("reassembled text differs from the original")
+	}
+
+	// Now make the NEXT primary send fail once, and assert a visible fallback
+	// (a second send whose body is plain text) is delivered.
+	mu.Lock()
+	bodies = nil
+	failFirst = 1
+	mu.Unlock()
+	_ = runOutbound("short reply that will fail once")
+	mu.Lock()
+	failBodies := append([]string(nil), bodies...)
+	mu.Unlock()
+	if len(failBodies) != 2 {
+		t.Fatalf("failed send must be followed by exactly one fallback, got %d sends", len(failBodies))
+	}
+	var fallback map[string]any
+	if err := json.Unmarshal([]byte(failBodies[1]), &fallback); err != nil {
+		t.Fatalf("decode fallback: %v", err)
+	}
+	fmsg := fallback["message"].(map[string]any)
+	sawNotice := false
+	for _, e := range fmsg["body"].([]any) {
+		el := e.(map[string]any)
+		if el["type"] == "AT" {
+			t.Fatal("the fallback must not carry an AT element")
+		}
+		if el["type"] == "TEXT" && strings.Contains(el["content"].(string), "Multica") {
+			sawNotice = true
+		}
+	}
+	if !sawNotice {
+		t.Fatalf("fallback body = %s, want a user-visible Multica notice", failBodies[1])
+	}
+}
+
 // TestInfoFlowDBSingleChatSessionIsolation is the A10 single-chat half: two
 // different InfoFlow users talking to the same bot must get two separate
 // sessions (keyed by their own user id), so one person never reads another's

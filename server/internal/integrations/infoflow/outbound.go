@@ -6,7 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -25,6 +28,7 @@ type outboundQueries interface {
 	TaskHasChannelIngestedMessages(ctx context.Context, taskID pgtype.UUID) (bool, error)
 	GetChannelTaskDelivery(ctx context.Context, taskID pgtype.UUID) (db.ChannelTaskDelivery, error)
 	GetChannelInstallation(ctx context.Context, arg db.GetChannelInstallationParams) (db.ChannelInstallation, error)
+	GetWorkspace(ctx context.Context, id pgtype.UUID) (db.Workspace, error)
 }
 
 // Outbound delivers an agent's chat reply back to InfoFlow. It reads the same
@@ -35,6 +39,10 @@ type Outbound struct {
 	decrypt Decrypter
 	client  *Client
 	logger  *slog.Logger
+	// appURL is the Multica web app host; when set, a failure fallback can point
+	// the user at the full chat thread. Empty disables the link (not the
+	// fallback itself).
+	appURL string
 }
 
 func NewOutbound(q outboundQueries, decrypt Decrypter, client *Client, logger *slog.Logger) *Outbound {
@@ -47,6 +55,13 @@ func NewOutbound(q outboundQueries, decrypt Decrypter, client *Client, logger *s
 	return &Outbound{q: q, decrypt: decrypt, client: client, logger: logger}
 }
 
+// WithAppURL sets the Multica web app host used to build the chat-thread link
+// in a failure fallback. It returns the receiver so wiring can chain it.
+func (o *Outbound) WithAppURL(appURL string) *Outbound {
+	o.appURL = appURL
+	return o
+}
+
 func (o *Outbound) Register(bus *events.Bus) {
 	bus.Subscribe(protocol.EventChatDone, o.handleEvent)
 	bus.Subscribe(protocol.EventTaskFailed, o.handleEvent)
@@ -57,11 +72,15 @@ func (o *Outbound) handleEvent(e events.Event) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := o.processEvent(ctx, e); err != nil {
-		if IsPermissionNotGranted(err) {
-			o.logger.WarnContext(ctx, "infoflow outbound: permission not granted", "error", err)
-			return
-		}
-		o.logger.WarnContext(ctx, "infoflow outbound: reply delivery failed", "error", err, "chat_session_id", e.ChatSessionID)
+		// A reply that never reaches the user must not vanish. processEvent has
+		// already logged the structured failure and (where possible) delivered a
+		// visible fallback; this branch only records that the turn did not
+		// complete its primary delivery.
+		o.logger.WarnContext(ctx, "infoflow outbound: reply delivery failed",
+			"error", err,
+			"error_kind", classifySendError(err),
+			"chat_session_id", e.ChatSessionID,
+		)
 	}
 }
 
@@ -134,7 +153,98 @@ func (o *Outbound) processEvent(ctx context.Context, e events.Event) error {
 		)
 		return nil
 	}
+	// The reply failed for some other reason: classify it, log structurally, and
+	// leave the user a visible notice instead of silence. The fallback is a
+	// short plain message so it fits any length limit, and it carries a
+	// chat-thread link when the app host is known.
+	o.logger.ErrorContext(ctx, "infoflow outbound: reply delivery failed",
+		"error", sendErr,
+		"error_kind", classifySendError(sendErr),
+		"installation_id", uuidOrEmpty(inst.ID),
+		"chat_type", target.ChatType,
+		"chat_id", target.ChatID,
+		"chat_session_id", e.ChatSessionID,
+		"content_runes", utf8.RuneCountInString(content),
+		"action", "delivered a visible fallback notice to the user; see docs for the failure kind",
+	)
+	o.deliverFailureFallback(ctx, s, target, inst.WorkspaceID, e.ChatSessionID, sendErr)
 	return fmt.Errorf("post infoflow reply: %w", sendErr)
+}
+
+// deliverFailureFallback posts a short, user-visible notice so a failed reply is
+// never silent. Failures here are logged but never escalated (there is nothing
+// further to try, and the primary error is already reported).
+func (o *Outbound) deliverFailureFallback(ctx context.Context, s *sender, target infoflowSendTarget, workspaceID pgtype.UUID, sessionID string, cause error) {
+	fallback := infoflowFailureFallbackText(o.chatThreadURL(ctx, workspaceID, sessionID), cause)
+	notice := target
+	// The fallback must fit comfortably; drop the AT so a failed mention cannot
+	// break a second send, keeping it a plain notice.
+	notice.MentionUserID = ""
+	if _, err := s.sendText(ctx, notice, fallback); err != nil {
+		o.logger.ErrorContext(ctx, "infoflow outbound: failure fallback could not be delivered",
+			"error", err,
+			"error_kind", classifySendError(err),
+			"chat_type", target.ChatType,
+			"chat_id", target.ChatID,
+		)
+	}
+}
+
+// infoflowFailureFallbackText is the user-visible notice shown when the primary
+// reply could not be delivered. kept short (<< the 2048-rune limit).
+func infoflowFailureFallbackText(threadURL string, cause error) string {
+	var b strings.Builder
+	switch {
+	case errors.Is(cause, ErrMessageTooLong):
+		b.WriteString("⚠️ 这条回复超过了如流单条消息的长度上限，未能发出。")
+	case errors.Is(cause, ErrPermissionNotGranted):
+		b.WriteString("⚠️ 机器人缺少发消息所需的接口权限，这条回复未能发出。")
+	default:
+		b.WriteString("⚠️ 这条回复未能发送到如流（发送接口报错）。")
+	}
+	if threadURL != "" {
+		b.WriteString("\n完整回复请见 Multica 会话：")
+		b.WriteString(threadURL)
+	} else {
+		b.WriteString("\n完整回复保存在 Multica 会话中，请打开工作区查看。")
+	}
+	return b.String()
+}
+
+// chatThreadURL builds `<appURL>/<workspace slug>/chat?session=<id>` when the
+// app host, workspace slug and session id are all known; otherwise "". The
+// route mirrors the web app's chat page (packages/core paths.workspace().chat()
+// + ?session=<id>), which is the stable deep link to a chat thread.
+func (o *Outbound) chatThreadURL(ctx context.Context, workspaceID pgtype.UUID, sessionID string) string {
+	if strings.TrimSpace(o.appURL) == "" || strings.TrimSpace(sessionID) == "" || !workspaceID.Valid {
+		return ""
+	}
+	ws, err := o.q.GetWorkspace(ctx, workspaceID)
+	if err != nil || strings.TrimSpace(ws.Slug) == "" {
+		return ""
+	}
+	base := strings.TrimRight(o.appURL, "/")
+	return base + "/" + url.PathEscape(ws.Slug) + "/chat?session=" + url.QueryEscape(sessionID)
+}
+
+// classifySendError maps a send failure to a stable, log-friendly kind.
+func classifySendError(err error) string {
+	switch {
+	case err == nil:
+		return ""
+	case errors.Is(err, ErrMessageTooLong):
+		return "message_too_long"
+	case errors.Is(err, ErrPermissionNotGranted):
+		return "permission_not_granted"
+	case errors.Is(err, ErrUnauthorized):
+		return "unauthorized"
+	default:
+		var apiErr *apiError
+		if errors.As(err, &apiErr) {
+			return fmt.Sprintf("api_errcode_%d", apiErr.Code)
+		}
+		return "transport_or_unknown"
+	}
 }
 
 func bindingFromTaskDelivery(delivery db.ChannelTaskDelivery) db.ChannelChatSessionBinding {

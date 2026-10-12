@@ -34,6 +34,14 @@ const (
 	// errCodeGroupNotFollow is returned when the robot is not a member of the
 	// target group (40001 "group not follow").
 	errCodeGroupNotFollow = 40001
+	// errCodeBodyTooLong / errCodeTextTooLong are the two length rejections the
+	// group-send API returns for an oversized message (observed against the
+	// live gateway): 40060 "message body length exceed limit" (whole request /
+	// body array) and 40061 "message text length exceed limit" (the text run).
+	// Both are non-retryable for the SAME payload and must be classified so the
+	// outbound path can chunk instead of silently dropping.
+	errCodeBodyTooLong = 40060
+	errCodeTextTooLong = 40061
 )
 
 // ErrPermissionNotGranted marks a business error caused by a missing
@@ -46,6 +54,12 @@ var ErrPermissionNotGranted = errors.New("infoflow: application permission not g
 // ErrUnauthorized is returned on HTTP 401 so the outbound sender can drop the
 // cached access token and retry once with a fresh one.
 var ErrUnauthorized = errors.New("infoflow: unauthorized (access token expired or invalid)")
+
+// ErrMessageTooLong marks a business rejection caused by an oversized message
+// body. The sender chunks text well below the observed limit, so this should be
+// rare, but a caller that still sees it must not treat the message as
+// undeliverable silently.
+var ErrMessageTooLong = errors.New("infoflow: message exceeds the platform length limit")
 
 // apiError preserves InfoFlow's machine-readable errcode so callers can
 // distinguish an actionable permission problem from a transient failure.
@@ -76,6 +90,19 @@ func IsPermissionNotGranted(err error) bool {
 		// "Api not allowed" text means the application lacks the permission;
 		// "lack param" is a request-shape bug and must stay a plain API error.
 		return apiErr.Code == errCodeAPINotAllowed && apiErr.Message == "Api not allowed"
+	}
+	return false
+}
+
+// IsMessageTooLong reports whether err is (or wraps) a length rejection, so the
+// outbound path can name the cause instead of hiding it behind a generic error.
+func IsMessageTooLong(err error) bool {
+	if errors.Is(err, ErrMessageTooLong) {
+		return true
+	}
+	var apiErr *apiError
+	if errors.As(err, &apiErr) {
+		return apiErr.Code == errCodeBodyTooLong || apiErr.Code == errCodeTextTooLong
 	}
 	return false
 }
@@ -272,6 +299,9 @@ func decodeBusinessError(path string, envelope businessEnvelope) error {
 	err := &apiError{Path: path, StatusCode: http.StatusOK, Code: inner.Errcode, Message: inner.Errmsg}
 	if inner.Errcode == errCodeAPINotAllowed && inner.Errmsg == "Api not allowed" {
 		return fmt.Errorf("%w: %v", ErrPermissionNotGranted, err)
+	}
+	if inner.Errcode == errCodeBodyTooLong || inner.Errcode == errCodeTextTooLong {
+		return fmt.Errorf("%w: %v", ErrMessageTooLong, err)
 	}
 	return err
 }

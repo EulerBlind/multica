@@ -434,7 +434,13 @@ func (f fakeOutboundQueries) GetChannelTaskDelivery(context.Context, pgtype.UUID
 	return f.delivery, nil
 }
 func (f fakeOutboundQueries) GetChannelInstallation(context.Context, db.GetChannelInstallationParams) (db.ChannelInstallation, error) {
-	return db.ChannelInstallation{Status: "active"}, nil
+	return db.ChannelInstallation{
+		Status: "active",
+		Config: []byte(`{"app_id":"8682","app_key":"k","app_secret_encrypted":"cw==","agent_id":"8682"}`),
+	}, nil
+}
+func (f fakeOutboundQueries) GetWorkspace(context.Context, pgtype.UUID) (db.Workspace, error) {
+	return db.Workspace{Slug: "acme"}, nil
 }
 
 func newJSONServer(t *testing.T, handler http.HandlerFunc) *httptest.Server {
@@ -699,6 +705,9 @@ func (f singleChatOutboundQueries) GetChannelTaskDelivery(context.Context, pgtyp
 }
 func (f singleChatOutboundQueries) GetChannelInstallation(context.Context, db.GetChannelInstallationParams) (db.ChannelInstallation, error) {
 	return f.installation, nil
+}
+func (f singleChatOutboundQueries) GetWorkspace(context.Context, pgtype.UUID) (db.Workspace, error) {
+	return db.Workspace{Slug: "acme"}, nil
 }
 
 // A p2p reply that fails with 40000 "Api not allowed" is a known capability gap
