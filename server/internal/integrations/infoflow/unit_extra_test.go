@@ -97,16 +97,16 @@ func TestFactoryRegisterAndConfig(t *testing.T) {
 }
 
 func TestSendBodyValidation(t *testing.T) {
-	if _, err := buildSendBody(infoflowSendTarget{ChatType: "p2p"}, "1", "hi"); err == nil {
+	if _, err := buildSendBody(infoflowSendTarget{ChatType: "p2p"}, "1", "hi", msgTypeText); err == nil {
 		t.Fatal("expected missing recipient error")
 	}
-	if _, err := buildSendBody(infoflowSendTarget{ChatType: "group"}, "1", "hi"); err == nil {
+	if _, err := buildSendBody(infoflowSendTarget{ChatType: "group"}, "1", "hi", msgTypeText); err == nil {
 		t.Fatal("expected missing group error")
 	}
-	if _, err := buildSendBody(infoflowSendTarget{ChatType: "group", ChatID: "abc"}, "1", "hi"); err == nil {
+	if _, err := buildSendBody(infoflowSendTarget{ChatType: "group", ChatID: "abc"}, "1", "hi", msgTypeText); err == nil {
 		t.Fatal("expected non-numeric group error")
 	}
-	body, err := buildSendBody(infoflowSendTarget{ChatType: "group", ChatID: "123"}, "14534", "hi")
+	body, err := buildSendBody(infoflowSendTarget{ChatType: "group", ChatID: "123"}, "14534", "hi", msgTypeText)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +136,7 @@ func TestSendBodyValidation(t *testing.T) {
 // body; a group reply without a mention target stays a plain TEXT body, and the
 // 1:1 path is unchanged (no AT).
 func TestGroupSendBodyMentionsAsker(t *testing.T) {
-	body, err := buildSendBody(infoflowSendTarget{ChatType: "group", ChatID: "12572761", MentionUserID: "alice"}, "14534", "here you go")
+	body, err := buildSendBody(infoflowSendTarget{ChatType: "group", ChatID: "12572761", MentionUserID: "alice"}, "14534", "here you go", msgTypeText)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +158,7 @@ func TestGroupSendBodyMentionsAsker(t *testing.T) {
 	}
 
 	// No mention target → plain TEXT only (legacy binding must not break).
-	plain, err := buildSendBody(infoflowSendTarget{ChatType: "group", ChatID: "12572761"}, "14534", "hi")
+	plain, err := buildSendBody(infoflowSendTarget{ChatType: "group", ChatID: "12572761"}, "14534", "hi", msgTypeText)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,7 +168,7 @@ func TestGroupSendBodyMentionsAsker(t *testing.T) {
 	}
 
 	// 1:1 body never gains an AT, even if MentionUserID is set by mistake.
-	p2p, err := buildSendBody(infoflowSendTarget{ChatType: "p2p", ChatID: "u1", SenderID: "u1", MentionUserID: "u1"}, "14534", "hi")
+	p2p, err := buildSendBody(infoflowSendTarget{ChatType: "p2p", ChatID: "u1", SenderID: "u1", MentionUserID: "u1"}, "14534", "hi", msgTypeText)
 	if err != nil {
 		t.Fatal(err)
 	}

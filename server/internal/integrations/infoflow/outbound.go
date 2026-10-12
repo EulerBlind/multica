@@ -133,8 +133,19 @@ func (o *Outbound) processEvent(ctx context.Context, e events.Event) error {
 	}
 	s := &sender{client: o.client, appKey: creds.AppKey, appSecret: creds.AppSecret, agentID: creds.AgentID}
 	target := outboundTarget(binding)
-	_, sendErr := s.sendText(ctx, target, content)
+	_, outcome, sendErr := s.sendChunked(ctx, target, content)
 	if sendErr == nil {
+		// Successful (possibly multi-batch) delivery. Record the element type and
+		// batch count so a partial-delivery falsehood (R30) is impossible.
+		o.logger.InfoContext(ctx, "infoflow outbound: reply delivered",
+			"installation_id", uuidOrEmpty(inst.ID),
+			"chat_type", target.ChatType,
+			"chat_id", target.ChatID,
+			"chat_session_id", e.ChatSessionID,
+			"outbound_msgtype", string(outcome.MsgType),
+			"delivered_batches", outcome.DeliveredBatches,
+			"content_runes", utf8.RuneCountInString(content),
+		)
 		return nil
 	}
 	// A single-chat reply depends on /app/message/send, which deployments may
@@ -165,6 +176,8 @@ func (o *Outbound) processEvent(ctx context.Context, e events.Event) error {
 		"chat_id", target.ChatID,
 		"chat_session_id", e.ChatSessionID,
 		"content_runes", utf8.RuneCountInString(content),
+		"outbound_msgtype", string(outcome.MsgType),
+		"delivered_batches", outcome.DeliveredBatches,
 		"action", "delivered a visible fallback notice to the user; see docs for the failure kind",
 	)
 	o.deliverFailureFallback(ctx, s, target, inst.WorkspaceID, e.ChatSessionID, sendErr)
@@ -180,7 +193,9 @@ func (o *Outbound) deliverFailureFallback(ctx context.Context, s *sender, target
 	// The fallback must fit comfortably; drop the AT so a failed mention cannot
 	// break a second send, keeping it a plain notice.
 	notice.MentionUserID = ""
-	if _, err := s.sendText(ctx, notice, fallback); err != nil {
+	// Force TEXT: if the primary failure was a markdown rejection, retrying the
+	// notice as markdown would fail the same way.
+	if _, err := s.sendTextOnly(ctx, notice, fallback); err != nil {
 		o.logger.ErrorContext(ctx, "infoflow outbound: failure fallback could not be delivered",
 			"error", err,
 			"error_kind", classifySendError(err),

@@ -56,7 +56,7 @@ type sender struct {
 // rides on the FIRST batch only, so the recipient is notified once (see
 // sendChunked).
 func (s *sender) sendText(ctx context.Context, target infoflowSendTarget, text string) (string, error) {
-	ids, err := s.sendChunked(ctx, target, text)
+	ids, _, err := s.sendChunked(ctx, target, text)
 	if err != nil {
 		return "", err
 	}
@@ -67,15 +67,32 @@ func (s *sender) sendText(ctx context.Context, target infoflowSendTarget, text s
 }
 
 // sendChunked delivers text as one or more ordered batches and returns each
-// batch's message id. It is the single place length limits are handled: an
-// oversized single request would otherwise be rejected outright (errcode 40061)
-// and the reply would silently vanish. The AT mention (when present) is attached
-// to the first batch only so the group is not re-notified per batch.
-func (s *sender) sendChunked(ctx context.Context, target infoflowSendTarget, text string) ([]string, error) {
+// batch's id plus an outcome (msgtype used, batches delivered). It is the single
+// place length limits are handled: an oversized single request would otherwise
+// be rejected outright (errcode 40061) and the reply would silently vanish.
+//
+// For a GROUP target the body is first normalized for InfoFlow (tables/task
+// lists) and, when it still contains markdown, sent as header msgtype=MD with an
+// MD element. Markdown send failures fall back to re-sending the SAME content as
+// plain TEXT so a rendering mismatch never drops the reply body. The AT mention
+// (when present) rides the first batch only.
+func (s *sender) sendChunked(ctx context.Context, target infoflowSendTarget, text string) ([]string, infoflowSendOutcome, error) {
 	if text == "" {
-		return nil, nil
+		return nil, infoflowSendOutcome{}, nil
 	}
-	batches := splitTextChunks(text, infoflowMaxTextRunes)
+	// Group replies are normalized once; p2p keeps its raw text (unchanged this
+	// round — the single-chat send path is still gated by D1).
+	body := text
+	useMD := false
+	if target.ChatType == "group" {
+		body = normalizeForInfoflow(text)
+		useMD = containsMarkdown(body)
+	}
+	msgType := msgTypeText
+	if useMD {
+		msgType = msgTypeMD
+	}
+	batches := splitTextChunks(body, infoflowMaxTextRunes)
 	ids := make([]string, 0, len(batches))
 	for i, batch := range batches {
 		batchTarget := target
@@ -83,7 +100,43 @@ func (s *sender) sendChunked(ctx context.Context, target infoflowSendTarget, tex
 			// Only the first batch @ mentions the asker.
 			batchTarget.MentionUserID = ""
 		}
-		id, err := s.sendOnce(ctx, batchTarget, batch)
+		id, err := s.sendOnce(ctx, batchTarget, batch, msgType)
+		if err != nil {
+			// Markdown was rejected (bad msgtype, unsupported element, or the
+			// gateway refusing MD): re-send THE SAME content as plain TEXT so the
+			// reply body is not lost. Only if the TEXT retry also fails does the
+			// caller fall back to a visible notice.
+			if msgType == msgTypeMD {
+				retryIDs, retryErr := s.sendBatchesAsText(ctx, target, batches)
+				if retryErr == nil {
+					return retryIDs, infoflowSendOutcome{MsgType: msgTypeText, DeliveredBatches: len(retryIDs)}, nil
+				}
+				return retryIDs, infoflowSendOutcome{MsgType: msgTypeText, DeliveredBatches: len(retryIDs)}, fmt.Errorf("post infoflow reply as markup failed then text retry failed: %w", retryErr)
+			}
+			return ids, infoflowSendOutcome{MsgType: msgType, DeliveredBatches: len(ids)}, err
+		}
+		ids = append(ids, id)
+		if i < len(batches)-1 && infoflowDefaultChunkDelay > 0 {
+			select {
+			case <-ctx.Done():
+				return ids, infoflowSendOutcome{MsgType: msgType, DeliveredBatches: len(ids)}, ctx.Err()
+			case <-time.After(infoflowDefaultChunkDelay):
+			}
+		}
+	}
+	return ids, infoflowSendOutcome{MsgType: msgType, DeliveredBatches: len(ids)}, nil
+}
+
+// sendBatchesAsText re-sends a prepared batch list as plain TEXT (the markdown
+// fallback), keeping the AT on the first batch and the ordering/delay rules.
+func (s *sender) sendBatchesAsText(ctx context.Context, target infoflowSendTarget, batches []string) ([]string, error) {
+	ids := make([]string, 0, len(batches))
+	for i, batch := range batches {
+		batchTarget := target
+		if i > 0 {
+			batchTarget.MentionUserID = ""
+		}
+		id, err := s.sendOnce(ctx, batchTarget, batch, msgTypeText)
 		if err != nil {
 			return ids, err
 		}
@@ -99,9 +152,19 @@ func (s *sender) sendChunked(ctx context.Context, target infoflowSendTarget, tex
 	return ids, nil
 }
 
+// sendTextOnly posts text as plain TEXT (no markdown detection, no
+// normalization, no chunking). The failure fallback uses it so a markdown
+// rejection cannot repeat: the notice always goes out as TEXT.
+func (s *sender) sendTextOnly(ctx context.Context, target infoflowSendTarget, text string) (string, error) {
+	if text == "" {
+		return "", nil
+	}
+	return s.sendOnce(ctx, target, text, msgTypeText)
+}
+
 // sendOnce posts exactly one message (no chunking) and returns its id.
-func (s *sender) sendOnce(ctx context.Context, target infoflowSendTarget, text string) (string, error) {
-	body, err := buildSendBody(target, s.agentID, text)
+func (s *sender) sendOnce(ctx context.Context, target infoflowSendTarget, text string, msgType infoflowMsgType) (string, error) {
+	body, err := buildSendBody(target, s.agentID, text, msgType)
 	if err != nil {
 		return "", err
 	}
@@ -180,7 +243,7 @@ func runeCutIndex(s string, maxRunes int) int {
 	return limit
 }
 
-func buildSendBody(target infoflowSendTarget, agentID, text string) (map[string]any, error) {
+func buildSendBody(target infoflowSendTarget, agentID, text string, msgType infoflowMsgType) (map[string]any, error) {
 	if target.ChatType == "p2p" {
 		if target.SenderID == "" {
 			return nil, errors.New("infoflow: 1:1 send missing recipient")
@@ -195,6 +258,9 @@ func buildSendBody(target infoflowSendTarget, agentID, text string) (map[string]
 			"agentid": agent,
 			"text":    map[string]any{"content": text},
 		}, nil
+	}
+	if msgType == "" {
+		msgType = msgTypeText
 	}
 	if target.ChatID == "" {
 		return nil, errors.New("infoflow: group send missing group id")
@@ -214,14 +280,16 @@ func buildSendBody(target infoflowSendTarget, agentID, text string) (map[string]
 	if mention := strings.TrimSpace(target.MentionUserID); mention != "" {
 		body = append(body, map[string]any{"type": "AT", "atall": false, "atuserids": []string{mention}})
 	}
-	body = append(body, map[string]any{"type": "TEXT", "content": text})
+	// The element type follows the header msgtype: a body containing a markdown
+	// element requires msgtype=MD (the gateway rejects a mismatch).
+	body = append(body, map[string]any{"type": string(msgType), "content": text})
 	return map[string]any{
 		"agentid": agentIDNum,
 		"message": map[string]any{
 			"header": map[string]any{
 				"toid":        toID,
 				"totype":      "GROUP",
-				"msgtype":     "TEXT",
+				"msgtype":     string(msgType),
 				"clientmsgid": time.Now().UnixMilli(),
 				"role":        "robot",
 			},
@@ -251,4 +319,23 @@ func messageIDFromSendResponse(data map[string]any) string {
 		}
 	}
 	return ""
+}
+
+// infoflowMsgType is the element/header type a batch is sent as. The InfoFlow
+// group send distinguishes plain text (TEXT) from markdown (MD); the header
+// msgtype MUST match the body element type (see the SDK's sendToGroupWithOptions
+// doc: a body containing MD requires header msgtype=MD).
+type infoflowMsgType string
+
+const (
+	msgTypeText infoflowMsgType = "TEXT"
+	msgTypeMD   infoflowMsgType = "MD"
+)
+
+// infoflowSendOutcome reports how many batches were delivered and whether the
+// body went out as markdown or plain text. It exists so the outbound layer can
+// log partial delivery (R30) and the msgtype actually used.
+type infoflowSendOutcome struct {
+	MsgType          infoflowMsgType
+	DeliveredBatches int
 }

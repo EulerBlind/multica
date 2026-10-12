@@ -66,7 +66,7 @@ func TestSendChunkedSplitsOrdersAndMentionsOnce(t *testing.T) {
 	})
 	s := &sender{client: NewClient(srv.Client(), srv.URL), appKey: "k", appSecret: "s", agentID: "14534"}
 	text := strings.Repeat("行内容line ", 400) // > 1500 runes → multiple batches
-	ids, err := s.sendChunked(context.Background(),
+	ids, _, err := s.sendChunked(context.Background(),
 		infoflowSendTarget{ChatType: "group", ChatID: "12917205", MentionUserID: "alice"}, text)
 	if err != nil {
 		t.Fatalf("sendChunked: %v", err)
@@ -129,7 +129,7 @@ func TestSendChunkedStopsOnFailure(t *testing.T) {
 		}
 	})
 	s := &sender{client: NewClient(srv.Client(), srv.URL), appKey: "k", appSecret: "s", agentID: "14534"}
-	ids, err := s.sendChunked(context.Background(),
+	ids, _, err := s.sendChunked(context.Background(),
 		infoflowSendTarget{ChatType: "group", ChatID: "12917205"}, strings.Repeat("x", 5000))
 	if err == nil || !IsMessageTooLong(err) {
 		t.Fatalf("err = %v, want ErrMessageTooLong", err)
