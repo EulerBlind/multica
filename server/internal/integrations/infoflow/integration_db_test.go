@@ -533,3 +533,235 @@ WHERE channel_type='infoflow' AND channel_message_id=$1 AND drop_reason='not_add
 		t.Fatalf("audit chat id = %q, want %q", auditChat, groupID)
 	}
 }
+
+// TestInfoFlowDBGroupAddressingGate is the A10 evidence at the Router+DB level:
+// a real InfoFlow group payload whose body @s the bot must be ingested and get
+// its own session keyed by the GROUP id, while an unaddressed one (including an
+// ALL_MESSAGE_FORWARD subscribed message) must be dropped as
+// not_addressed_in_group and create no session.
+func TestInfoFlowDBGroupAddressingGate(t *testing.T) {
+	pool := infoflowDB(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	queries := db.New(pool)
+	fx := dbfx.New(pool, "", "")
+	suffix := util.UUIDToString(dbid.NewV7())
+	fx.UserID = fx.User(t, "Owner", "infoflow-n36-"+suffix+"@multica.test")
+	fx.WorkspaceID = fx.Workspace(t, "InfoFlow N36", "infoflow-n36-"+suffix)
+	fx.Member(t, fx.WorkspaceID, fx.UserID, "owner")
+	runtimeID := fx.Runtime(t, "Runtime")
+	agentID := fx.Agent(t, "Agent", runtimeID)
+	fx.Cleanup(t, "DELETE FROM channel_installation WHERE workspace_id = $1", fx.WorkspaceID)
+
+	appID := "app-n36-" + suffix
+	const botUserID = "4105001274"
+	srv, _ := infoflowTokenServer(t)
+	box, err := secretbox.New(bytes.Repeat([]byte{0x4E}, secretbox.KeySize))
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc, err := NewInstallService(queries, pool, box, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.http = srv.Client()
+	svc.apiBase = srv.URL
+	install, err := svc.RegisterBYO(ctx, RegisterBYOParams{
+		WorkspaceID:   util.MustParseUUID(fx.WorkspaceID),
+		AgentID:       util.MustParseUUID(agentID),
+		InitiatorID:   util.MustParseUUID(fx.UserID),
+		ApplicationID: appID,
+		AppKey:        "key-" + suffix,
+		AppSecret:     "secret-" + suffix,
+		BotUserID:     botUserID,
+	})
+	if err != nil {
+		t.Fatalf("RegisterBYO: %v", err)
+	}
+
+	router := engine.NewRouter(infoflowTestIssues{}, infoflowTestTasks{}, queries, engine.RouterConfig{})
+	router.Register(TypeInfoFlow, NewResolverSet(queries, pool, nil, nil))
+
+	groupID := "1257" + suffix[:6]
+	otherGroupID := "1258" + suffix[:6]
+	sender := "user-" + suffix
+	// deliver goes through the REAL adapter normalization (the same function the
+	// receive loop calls) so AddressedToBot is produced by production code
+	// rather than hand-set by the test.
+	deliver := func(msgID, group, body, eventType string) {
+		t.Helper()
+		raw := json.RawMessage(`{"agentid":"` + appID + `","eventtype":"` + eventType + `","groupid":"` + group +
+			`","message":{"header":{"fromuserid":"` + sender + `","toid":"` + group +
+			`","totype":"GROUP","msgtype":"MIXED","messageid":"` + msgID + `"},"body":` + body + `}}`)
+		msg, _, ok := inboundFromPayloadReason(raw, appID, botUserID)
+		if !ok {
+			t.Fatalf("adapter refused to normalize %s", msgID)
+		}
+		if msg.MessageID == "" {
+			msg.MessageID = msgID
+		}
+		if err := router.Handle(ctx, msg); err != nil {
+			t.Fatalf("router.Handle(%s): %v", msgID, err)
+		}
+	}
+
+	// 1) @bot via the documented atuserids shape → must be ingested.
+	addressedID := "msg-n36-at-" + suffix
+	deliver(addressedID, groupID,
+		`[{"type":"AT","atuserids":["`+botUserID+`"]},{"type":"TEXT","content":"@bot please help"}]`,
+		"MESSAGE_RECEIVE")
+
+	var chatID string
+	if err := pool.QueryRow(ctx, `
+SELECT cs.id FROM chat_session cs
+JOIN channel_chat_session_binding b ON b.chat_session_id = cs.id
+WHERE b.installation_id = $1 AND b.channel_chat_id = $2`, install.ID, groupID).Scan(&chatID); err != nil {
+		t.Fatalf("addressed group message did not create a session keyed by the group id: %v", err)
+	}
+	var addressedDrops int
+	if err := pool.QueryRow(ctx, `
+SELECT count(*) FROM channel_inbound_audit
+WHERE installation_id = $1 AND channel_message_id = $2 AND drop_reason = 'not_addressed_in_group'`,
+		install.ID, addressedID).Scan(&addressedDrops); err != nil {
+		t.Fatalf("count addressed drops: %v", err)
+	}
+	if addressedDrops != 0 {
+		t.Fatalf("an @bot message was wrongly dropped as not_addressed_in_group (%d rows)", addressedDrops)
+	}
+
+	// 2) unaddressed plain group message → dropped, no session for that group.
+	plainID := "msg-n36-plain-" + suffix
+	deliver(plainID, otherGroupID, `[{"type":"TEXT","content":"group chatter"}]`, "MESSAGE_RECEIVE")
+	assertDropped := func(msgID, wantGroup string) {
+		t.Helper()
+		var reason string
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			err := pool.QueryRow(ctx, `
+SELECT drop_reason FROM channel_inbound_audit
+WHERE installation_id = $1 AND channel_message_id = $2
+ORDER BY received_at DESC LIMIT 1`, install.ID, msgID).Scan(&reason)
+			if err == nil {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("no audit row for %s: %v", msgID, err)
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		if reason != "not_addressed_in_group" {
+			t.Fatalf("%s drop_reason = %q, want not_addressed_in_group", msgID, reason)
+		}
+		var sessions int
+		if err := pool.QueryRow(ctx, `
+SELECT count(*) FROM channel_chat_session_binding
+WHERE installation_id = $1 AND channel_chat_id = $2`, install.ID, wantGroup).Scan(&sessions); err != nil {
+			t.Fatalf("count sessions: %v", err)
+		}
+		if sessions != 0 {
+			t.Fatalf("%s must not create a session, found %d", msgID, sessions)
+		}
+	}
+	assertDropped(plainID, otherGroupID)
+
+	// 3) ALL_MESSAGE_FORWARD but unmentioned → still dropped (fail-closed).
+	fwdID := "msg-n36-fwd-" + suffix
+	deliver(fwdID, otherGroupID, `[{"type":"TEXT","content":"forwarded chatter"}]`, "ALL_MESSAGE_FORWARD")
+	assertDropped(fwdID, otherGroupID)
+
+	// 4) @all → addressed (broadcast).
+	allID := "msg-n36-all-" + suffix
+	allGroup := "1259" + suffix[:6]
+	deliver(allID, allGroup, `[{"type":"AT","atall":true},{"type":"TEXT","content":"@all notice"}]`, "MESSAGE_RECEIVE")
+	var allSessions int
+	if err := pool.QueryRow(ctx, `
+SELECT count(*) FROM channel_chat_session_binding
+WHERE installation_id = $1 AND channel_chat_id = $2`, install.ID, allGroup).Scan(&allSessions); err != nil {
+		t.Fatalf("count @all sessions: %v", err)
+	}
+	if allSessions != 1 {
+		t.Fatalf("@all must be addressed and create exactly one session, got %d", allSessions)
+	}
+}
+
+// TestInfoFlowDBSingleChatSessionIsolation is the A10 single-chat half: two
+// different InfoFlow users talking to the same bot must get two separate
+// sessions (keyed by their own user id), so one person never reads another's
+// conversation.
+func TestInfoFlowDBSingleChatSessionIsolation(t *testing.T) {
+	pool := infoflowDB(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	queries := db.New(pool)
+	fx := dbfx.New(pool, "", "")
+	suffix := util.UUIDToString(dbid.NewV7())
+	fx.UserID = fx.User(t, "Owner", "infoflow-n36dm-"+suffix+"@multica.test")
+	fx.WorkspaceID = fx.Workspace(t, "InfoFlow N36 DM", "infoflow-n36dm-"+suffix)
+	fx.Member(t, fx.WorkspaceID, fx.UserID, "owner")
+	runtimeID := fx.Runtime(t, "Runtime")
+	agentID := fx.Agent(t, "Agent", runtimeID)
+	fx.Cleanup(t, "DELETE FROM channel_installation WHERE workspace_id = $1", fx.WorkspaceID)
+
+	appID := "app-n36dm-" + suffix
+	srv, _ := infoflowTokenServer(t)
+	box, err := secretbox.New(bytes.Repeat([]byte{0x2D}, secretbox.KeySize))
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc, err := NewInstallService(queries, pool, box, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.http = srv.Client()
+	svc.apiBase = srv.URL
+	install, err := svc.RegisterBYO(ctx, RegisterBYOParams{
+		WorkspaceID:   util.MustParseUUID(fx.WorkspaceID),
+		AgentID:       util.MustParseUUID(agentID),
+		InitiatorID:   util.MustParseUUID(fx.UserID),
+		ApplicationID: appID,
+		AppKey:        "key-" + suffix,
+		AppSecret:     "secret-" + suffix,
+		BotUserID:     "4105001274",
+	})
+	if err != nil {
+		t.Fatalf("RegisterBYO: %v", err)
+	}
+	router := engine.NewRouter(infoflowTestIssues{}, infoflowTestTasks{}, queries, engine.RouterConfig{})
+	router.Register(TypeInfoFlow, NewResolverSet(queries, pool, nil, nil))
+
+	send := func(user, msgID string) {
+		t.Helper()
+		raw := json.RawMessage(`{"agentid":"` + appID + `","FromUserId":"` + user +
+			`","FromUserName":"` + user + `","Content":"hello","MsgId":"` + msgID + `","MsgType":"text"}`)
+		msg, _, ok := inboundFromPayloadReason(raw, appID, "4105001274")
+		if !ok {
+			t.Fatalf("adapter refused single-chat message from %s", user)
+		}
+		if err := router.Handle(ctx, msg); err != nil {
+			t.Fatalf("router.Handle(%s): %v", msgID, err)
+		}
+	}
+	send("alice-"+suffix, "dm-a-"+suffix)
+	send("bob-"+suffix, "dm-b-"+suffix)
+
+	var n int
+	if err := pool.QueryRow(ctx, `
+SELECT count(*) FROM channel_chat_session_binding
+WHERE installation_id = $1 AND chat_type = 'p2p'`, install.ID).Scan(&n); err != nil {
+		t.Fatalf("count p2p bindings: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("two single-chat users must get two sessions, got %d", n)
+	}
+	var aliceKey, bobKey string
+	if err := pool.QueryRow(ctx, `
+SELECT string_agg(channel_chat_id, ',' ORDER BY channel_chat_id) FROM channel_chat_session_binding
+WHERE installation_id = $1 AND chat_type = 'p2p'`, install.ID).Scan(&aliceKey); err != nil {
+		t.Fatalf("read p2p keys: %v", err)
+	}
+	aliceKey = strings.TrimSpace(aliceKey)
+	bobKey = "alice-" + suffix + ",bob-" + suffix
+	if aliceKey != bobKey {
+		t.Fatalf("p2p session keys = %q, want %q (each user keyed by their own id)", aliceKey, bobKey)
+	}
+}

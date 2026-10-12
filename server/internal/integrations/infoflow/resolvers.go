@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -37,7 +38,7 @@ func NewResolverSet(q *db.Queries, tx engine.TxStarter, replier engine.OutboundR
 			Direct:   "InfoFlow direct message",
 			Fallback: "InfoFlow chat",
 		})},
-		Audit:      &auditor{q: q},
+		Audit:      &auditor{q: q, logger: logger},
 		Replier:    replier,
 		OriginType: originInfoFlowChat,
 	}
@@ -212,6 +213,54 @@ func uuidOrEmpty(id pgtype.UUID) string {
 	return util.UUIDToString(id)
 }
 
+func (r *auditor) loggerFor() *slog.Logger {
+	if r.logger != nil {
+		return r.logger
+	}
+	return slog.Default()
+}
+
+// configuredBotUserID reads the installation's stored bot_user_id for the
+// diagnostic log. A read failure yields "" (the log still carries the mention
+// targets, which is the actionable half).
+func (r *auditor) configuredBotUserID(ctx context.Context, instID pgtype.UUID) string {
+	if !instID.Valid {
+		return ""
+	}
+	row, err := r.q.GetChannelInstallation(ctx, db.GetChannelInstallationParams{ID: instID})
+	if err != nil {
+		return ""
+	}
+	cfg, err := decodeCredentials(row.Config, nil)
+	if err != nil {
+		return ""
+	}
+	return cfg.BotUserID
+}
+
+// mentionTargets flattens every AT element's candidate target ids for logging.
+func mentionTargets(msg channel.InboundMessage) []string {
+	raw, err := decodeInfoFlowRaw(msg)
+	if err != nil || raw.Message == nil {
+		return nil
+	}
+	var out []string
+	for _, item := range raw.Message.Body {
+		if !strings.EqualFold(stringOrEmpty(item["type"]), "AT") {
+			continue
+		}
+		for _, id := range stringListOrEmpty(item["atuserids"]) {
+			out = append(out, id)
+		}
+		for _, candidate := range []any{item["userid"], item["userId"], item["uid"], item["id"], item["name"], item["label"]} {
+			if s := stringOrEmpty(candidate); s != "" {
+				out = append(out, s)
+			}
+		}
+	}
+	return out
+}
+
 type deduper struct{ q *db.Queries }
 
 func (r *deduper) Claim(ctx context.Context, installationID pgtype.UUID, messageID string) (pgtype.UUID, error) {
@@ -342,9 +391,28 @@ func (r *sessionBinder) BindMedia(ctx context.Context, p engine.BindMediaParams)
 	})
 }
 
-type auditor struct{ q *db.Queries }
+type auditor struct {
+	q      *db.Queries
+	logger *slog.Logger
+}
 
 func (r *auditor) RecordDrop(ctx context.Context, instID pgtype.UUID, msg channel.InboundMessage, reason engine.DropReason) error {
+	if reason == engine.DropReasonNotAddressedInGroup {
+		// A group message that we received but decided was not addressed to the
+		// bot. Log the mention targets alongside the configured bot id so a
+		// misconfigured installation (e.g. bot_user_id holding a group id) is
+		// diagnosable from logs alone: if mention_targets never contains
+		// bot_user_id, the message really was not for us OR the id is wrong.
+		configured := r.configuredBotUserID(ctx, instID)
+		r.loggerFor().InfoContext(ctx, "infoflow: group message not addressed to the bot",
+			"installation_id", uuidOrEmpty(instID),
+			"chat_id", msg.Source.ChatID,
+			"event_id", msg.EventID,
+			"bot_user_id_configured", configured,
+			"mention_targets", strings.Join(mentionTargets(msg), ","),
+			"hint", "bot_user_id must be the robot's own InfoFlow user id; a group id here makes every @ look unaddressed",
+		)
+	}
 	return r.q.RecordChannelInboundDrop(ctx, db.RecordChannelInboundDropParams{
 		ID:               dbid.NewV7(),
 		ChannelType:      string(TypeInfoFlow),

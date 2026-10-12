@@ -555,8 +555,56 @@ func TestAddressedToBotRequiresSignalWithoutBotUserID(t *testing.T) {
 	if !addressedToBot(matched, "bot-9", "MESSAGE_RECEIVE") {
 		t.Fatal("a matching @userid must count as addressed-to-bot")
 	}
-	if !addressedToBot(named, "", "ALL_MESSAGE_FORWARD") {
-		t.Fatal("ALL_MESSAGE_FORWARD is always addressed")
+	// Fail-closed: an ALL_MESSAGE_FORWARD subscription only decides what we
+	// receive; it must NOT by itself mark an unmentioned message as addressed.
+	if addressedToBot(named, "", "ALL_MESSAGE_FORWARD") {
+		t.Fatal("ALL_MESSAGE_FORWARD without a mention must NOT be addressed (fail-closed)")
+	}
+}
+
+// N36 regression: the InfoFlow group body carries the mention target in
+// `atuserids` (documented shape) — the previous parser never read it, so real
+// @ messages were judged unaddressed.
+func TestAddressedToBotReadsAtUserIDs(t *testing.T) {
+	parse := func(body string, reply bool) infoflowRaw {
+		t.Helper()
+		replyJSON := "null"
+		if reply {
+			replyJSON = `{"messageid":"m0"}`
+		}
+		src := `{"message":{"header":{"msgtype":"TEXT"},"reply":` + replyJSON + `,"body":` + body + `}}`
+		var raw infoflowRaw
+		if err := json.Unmarshal([]byte(src), &raw); err != nil {
+			t.Fatal(err)
+		}
+		return raw
+	}
+	cases := []struct {
+		name      string
+		body      string
+		botUserID string
+		want      bool
+	}{
+		{"atuserids matches bot", `[{"type":"AT","atuserids":["4105001274"]},{"type":"TEXT","content":"hi"}]`, "4105001274", true},
+		{"atuserids matches among many", `[{"type":"AT","atuserids":["u1","4105001274"]}]`, "4105001274", true},
+		{"atuserids other user only", `[{"type":"AT","atuserids":["someone-else"]},{"type":"TEXT","content":"hi"}]`, "4105001274", false},
+		{"atall is addressed", `[{"type":"AT","atall":true}]`, "4105001274", true},
+		{"atall with empty bot id still addressed", `[{"type":"AT","atall":true}]`, "", true},
+		{"plain text no AT", `[{"type":"TEXT","content":"hello group"}]`, "4105001274", false},
+		{"AT without target and no bot id", `[{"type":"AT","name":"someone"}]`, "", false},
+		// Substring regression: a longer id containing the bot id must NOT match.
+		{"substring must not match", `[{"type":"AT","userid":"x4105001274y"}]`, "4105001274", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := addressedToBot(parse(tc.body, false), tc.botUserID, "MESSAGE_RECEIVE"); got != tc.want {
+				t.Fatalf("addressedToBot = %v, want %v (body=%s botUserID=%q)", got, tc.want, tc.body, tc.botUserID)
+			}
+		})
+	}
+	// A reply to the bot is addressed without any @.
+	if !addressedToBot(parse(`[{"type":"TEXT","content":"thanks"}]`, true), "", "MESSAGE_RECEIVE") {
+		t.Fatal("a reply to the bot must be addressed")
 	}
 }
 

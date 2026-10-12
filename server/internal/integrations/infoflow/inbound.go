@@ -201,38 +201,112 @@ func flattenGroupText(body []map[string]any) string {
 	return strings.TrimSpace(strings.Join(parts, "\n"))
 }
 
-func addressedToBot(payload infoflowRaw, botUserID, eventType string) bool {
-	if eventType == "ALL_MESSAGE_FORWARD" {
-		return true
-	}
+// addressedToBot decides whether a GROUP message is directed at the bot.
+//
+// Semantics are deliberately fail-CLOSED: only a positive, explicit mention of
+// the bot (or a reply to it) counts, so ordinary group chatter never reaches the
+// Agent. Two independent facts must hold:
+//
+//  1. the message actually mentions the bot, and
+//  2. the installation knows which user id the bot is (botUserID).
+//
+// If botUserID is unset we cannot positively identify the bot, so the message is
+// NOT addressed (except for an explicit @all) — this is the case that previously
+// opened the gate and let every group message through.
+//
+// The mention shape follows the InfoFlow group-message body, whose AT element is
+// documented as `{ "type": "AT", "atall": <bool>, "atuserids": [<id>...] }`.
+// Deployments have also been observed putting the target in userId/userid/uid/id
+// /name, so those are accepted as alternates. Matching is EXACT against the
+// configured bot id — never a substring — because a substring test made
+// "4105001274" match unrelated ids.
+//
+// ALL_MESSAGE_FORWARD (an app subscribed to every group message) does NOT imply
+// the bot was addressed; that subscription only decides what we receive, not
+// what we should act on. Such messages fall through to the mention check and are
+// dropped as not_addressed_in_group when the bot is not named.
+func addressedToBot(payload infoflowRaw, botUserID string, eventType string) bool {
 	if payload.Message == nil {
 		return false
 	}
-	if containsAT(payload.Message.Body) {
-		for _, item := range payload.Message.Body {
-			typeName := strings.ToUpper(stringOrEmpty(item["type"]))
-			if typeName != "AT" {
-				continue
-			}
-			if botUserID == "" {
-				// No configured bot user id: the only mention that is
-				// unambiguously directed at the bot is an @all. Treating every
-				// named @ as addressed would ingest all group chatter into the
-				// agent, so stay conservative and require an explicit signal.
-				if atAll, _ := item["atall"].(bool); atAll {
-					return true
-				}
-				continue
-			}
-			names := []string{stringOrEmpty(item["name"]), stringOrEmpty(item["userid"]), stringOrEmpty(item["userId"]), stringOrEmpty(item["id"])}
-			for _, name := range names {
-				if name != "" && strings.Contains(name, botUserID) {
-					return true
-				}
+	// A reply to the bot is an explicit signal regardless of @.
+	if payload.Message.Reply != nil {
+		return true
+	}
+	botUserID = strings.TrimSpace(botUserID)
+	for _, item := range payload.Message.Body {
+		if !strings.EqualFold(stringOrEmpty(item["type"]), "AT") {
+			continue
+		}
+		// @all is an explicit broadcast: it always addresses the bot.
+		if atAll, _ := item["atall"].(bool); atAll {
+			return true
+		}
+		// Without a configured bot id we cannot positively match a named @,
+		// so stay closed rather than guessing.
+		if botUserID == "" {
+			continue
+		}
+		if atItemMentionsBot(item, botUserID) {
+			return true
+		}
+	}
+	return false
+}
+
+// atItemMentionsBot reports whether one AT body element names the bot. It reads
+// the documented `atuserids` array first, then the alternate scalar shapes seen
+// in the wild, and compares each candidate EXACTLY against botUserID.
+func atItemMentionsBot(item map[string]any, botUserID string) bool {
+	if ids := stringListOrEmpty(item["atuserids"]); len(ids) > 0 {
+		for _, id := range ids {
+			if id == botUserID {
+				return true
 			}
 		}
 	}
-	return payload.Message.Reply != nil
+	candidates := []string{
+		stringOrEmpty(item["userid"]),
+		stringOrEmpty(item["userId"]),
+		stringOrEmpty(item["uid"]),
+		stringOrEmpty(item["id"]),
+		stringOrEmpty(item["name"]),
+		stringOrEmpty(item["label"]),
+	}
+	for _, candidate := range candidates {
+		if candidate != "" && candidate == botUserID {
+			return true
+		}
+	}
+	return false
+}
+
+// stringListOrEmpty normalizes a field that may arrive as a string or an array
+// of strings into a trimmed, non-empty slice.
+func stringListOrEmpty(v any) []string {
+	switch t := v.(type) {
+	case string:
+		if s := strings.TrimSpace(t); s != "" {
+			return []string{s}
+		}
+	case []any:
+		out := make([]string, 0, len(t))
+		for _, e := range t {
+			if s := stringOrEmpty(e); s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	case []string:
+		out := make([]string, 0, len(t))
+		for _, e := range t {
+			if s := strings.TrimSpace(e); s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	}
+	return nil
 }
 
 func containsAT(body []map[string]any) bool {
