@@ -52,14 +52,30 @@ var (
 	_ engine.Auditor              = (*auditor)(nil)
 )
 
+// groupRoutingSeparator joins the group id and the sender id into the group
+// session binding key. The engine treats BindingKey as an opaque
+// session-isolation key (one chat_session per (installation, BindingKey)) and
+// stores it in channel_chat_id, so the adapter can decide group isolation
+// without touching the shared engine. `:` cannot appear in a numeric group id,
+// and the whole string is compared for equality, so a sender id containing a
+// colon still yields a unique key.
+const groupRoutingSeparator = ":"
+
 // infoflowBindingConfig is the opaque outbound routing persisted on the chat
 // binding's config: enough to address a proactive reply back into the
-// originating conversation. SenderID is the lone recipient of a 1:1 chat; for a
-// group it is empty and the group is addressed by ChatID.
+// originating conversation.
+//
+//   - ChatID is ALWAYS the real addressable destination (the group id for a
+//     group, the peer user id for a 1:1). It is never the composite routing key.
+//   - SenderID is the 1:1 recipient for a direct chat, and the AT target for a
+//     group reply (the InfoFlow user id the bot must @ mention).
+//   - MentionUserID is the group AT target; kept separate from SenderID so the
+//     1:1 semantics stay intact.
 type infoflowBindingConfig struct {
-	ChatType string `json:"chat_type"`
-	ChatID   string `json:"chat_id"`
-	SenderID string `json:"sender_id,omitempty"`
+	ChatType      string `json:"chat_type"`
+	ChatID        string `json:"chat_id"`
+	SenderID      string `json:"sender_id,omitempty"`
+	MentionUserID string `json:"mention_user_id,omitempty"`
 }
 
 func infoflowSessionRouting(msg channel.InboundMessage) (bindingKey string, config []byte) {
@@ -67,6 +83,15 @@ func infoflowSessionRouting(msg channel.InboundMessage) (bindingKey string, conf
 	cfg := infoflowBindingConfig{ChatType: string(msg.Source.ChatType), ChatID: chatID}
 	if msg.Source.ChatType == channel.ChatTypeP2P {
 		cfg.SenderID = msg.Source.SenderID
+	} else {
+		// A group is isolated per (group, sender): A's follow-ups must not land
+		// in B's transcript, and a reply must @ the person who asked. SenderID
+		// stays the identity/binding key; the AT target rides along separately.
+		cfg.SenderID = msg.Source.SenderID
+		cfg.MentionUserID = msg.Source.SenderID
+		if sender := strings.TrimSpace(msg.Source.SenderID); sender != "" {
+			chatID = chatID + groupRoutingSeparator + sender
+		}
 	}
 	raw, _ := json.Marshal(cfg)
 	return chatID, raw
@@ -84,9 +109,42 @@ func outboundTarget(b db.ChannelChatSessionBinding) infoflowSendTarget {
 				target.ChatID = cfg.ChatID
 			}
 			target.SenderID = cfg.SenderID
+			target.MentionUserID = cfg.MentionUserID
 		}
 	}
+	// Compatibility: a legacy group binding stored the plain group id as its
+	// key, with no config ChatID/sender. Split the composite key back so a
+	// previously-written group binding still addresses the real group and, when
+	// the key carries a sender, @ that person.
+	target.ChatID, target.MentionUserID = resolveGroupTarget(target.ChatType, target.ChatID, target.MentionUserID)
 	return target
+}
+
+// resolveGroupTarget normalizes a group destination that may be a composite
+// routing key (`<group>:<sender>`) into the real group id plus the AT target.
+// Plain ids and non-group destinations pass through unchanged.
+func resolveGroupTarget(chatType, chatID, mentionUserID string) (string, string) {
+	if chatType == string(channel.ChatTypeP2P) {
+		return chatID, mentionUserID
+	}
+	groupID, sender, ok := splitGroupRoutingKey(chatID)
+	if !ok {
+		return chatID, mentionUserID
+	}
+	if mentionUserID == "" {
+		mentionUserID = sender
+	}
+	return groupID, mentionUserID
+}
+
+// splitGroupRoutingKey splits `<group>:<sender>` and reports whether the value
+// was composite. A value without the separator is a legacy plain group id.
+func splitGroupRoutingKey(key string) (groupID, sender string, ok bool) {
+	groupID, sender, ok = strings.Cut(key, groupRoutingSeparator)
+	if !ok {
+		return strings.TrimSpace(key), "", false
+	}
+	return strings.TrimSpace(groupID), strings.TrimSpace(sender), true
 }
 
 func decodeInfoFlowRaw(msg channel.InboundMessage) (infoflowRaw, error) {

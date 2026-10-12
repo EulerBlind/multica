@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -21,6 +22,9 @@ type infoflowSendTarget struct {
 	ChatType string
 	ChatID   string
 	SenderID string
+	// MentionUserID is the InfoFlow user id to @ mention ahead of a group reply
+	// (the person who asked). Empty means a plain group message with no AT.
+	MentionUserID string
 }
 
 // sender posts replies for one installation.
@@ -94,6 +98,14 @@ func buildSendBody(target infoflowSendTarget, agentID, text string) (map[string]
 	if err != nil {
 		return nil, fmt.Errorf("infoflow: agent id %q is not numeric: %w", agentID, err)
 	}
+	// Address the reply to the person who asked: an AT element ahead of the text
+	// (a plain TEXT-only body when there is no mention target, so a legacy
+	// binding never regresses into a broken send).
+	body := []map[string]any{}
+	if mention := strings.TrimSpace(target.MentionUserID); mention != "" {
+		body = append(body, map[string]any{"type": "AT", "atall": false, "atuserids": []string{mention}})
+	}
+	body = append(body, map[string]any{"type": "TEXT", "content": text})
 	return map[string]any{
 		"agentid": agentIDNum,
 		"message": map[string]any{
@@ -104,7 +116,7 @@ func buildSendBody(target infoflowSendTarget, agentID, text string) (map[string]
 				"clientmsgid": time.Now().UnixMilli(),
 				"role":        "robot",
 			},
-			"body": []map[string]any{{"type": "TEXT", "content": text}},
+			"body": body,
 		},
 	}, nil
 }

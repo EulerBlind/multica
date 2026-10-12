@@ -22,11 +22,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -127,6 +129,29 @@ func (r *infoflowSendRecorder) sent() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]string(nil), r.paths...)
+}
+
+func (r *infoflowSendRecorder) sentPathsAndBodies() ([]string, []string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.paths...), append([]string(nil), r.bodies...)
+}
+
+// numericSuffix extracts the leading decimal digits of a UUID-derived suffix so
+// a synthesized group id passes the group-send numeric validation.
+func numericSuffix(suffix string) string {
+	out := make([]byte, 0, len(suffix))
+	for i := 0; i < len(suffix); i++ {
+		c := suffix[i]
+		if c < '0' || c > '9' {
+			break
+		}
+		out = append(out, c)
+	}
+	if len(out) == 0 {
+		return "0"
+	}
+	return string(out)
 }
 
 func infoflowTokenServer(t *testing.T) (*httptest.Server, *infoflowSendRecorder) {
@@ -585,6 +610,9 @@ func TestInfoFlowDBGroupAddressingGate(t *testing.T) {
 	groupID := "1257" + suffix[:6]
 	otherGroupID := "1258" + suffix[:6]
 	sender := "user-" + suffix
+	// N42: group sessions are isolated per (group, sender); the binding key is
+	// the composite routing key, not the bare group id.
+	groupKey := func(group string) string { return group + groupRoutingSeparator + sender }
 	// deliver goes through the REAL adapter normalization (the same function the
 	// receive loop calls) so AddressedToBot is produced by production code
 	// rather than hand-set by the test.
@@ -615,7 +643,7 @@ func TestInfoFlowDBGroupAddressingGate(t *testing.T) {
 	if err := pool.QueryRow(ctx, `
 SELECT cs.id FROM chat_session cs
 JOIN channel_chat_session_binding b ON b.chat_session_id = cs.id
-WHERE b.installation_id = $1 AND b.channel_chat_id = $2`, install.ID, groupID).Scan(&chatID); err != nil {
+WHERE b.installation_id = $1 AND b.channel_chat_id = $2`, install.ID, groupKey(groupID)).Scan(&chatID); err != nil {
 		t.Fatalf("addressed group message did not create a session keyed by the group id: %v", err)
 	}
 	var addressedDrops int
@@ -655,7 +683,7 @@ ORDER BY received_at DESC LIMIT 1`, install.ID, msgID).Scan(&reason)
 		var sessions int
 		if err := pool.QueryRow(ctx, `
 SELECT count(*) FROM channel_chat_session_binding
-WHERE installation_id = $1 AND channel_chat_id = $2`, install.ID, wantGroup).Scan(&sessions); err != nil {
+WHERE installation_id = $1 AND channel_chat_id = $2`, install.ID, groupKey(wantGroup)).Scan(&sessions); err != nil {
 			t.Fatalf("count sessions: %v", err)
 		}
 		if sessions != 0 {
@@ -676,7 +704,7 @@ WHERE installation_id = $1 AND channel_chat_id = $2`, install.ID, wantGroup).Sca
 	var allSessions int
 	if err := pool.QueryRow(ctx, `
 SELECT count(*) FROM channel_chat_session_binding
-WHERE installation_id = $1 AND channel_chat_id = $2`, install.ID, allGroup).Scan(&allSessions); err != nil {
+WHERE installation_id = $1 AND channel_chat_id = $2`, install.ID, groupKey(allGroup)).Scan(&allSessions); err != nil {
 		t.Fatalf("count @all sessions: %v", err)
 	}
 	if allSessions != 1 {
@@ -787,11 +815,11 @@ func TestInfoFlowDBDisplayNameGroupMentionIsIngested(t *testing.T) {
 	var sessions int
 	if err := pool.QueryRow(ctx, `
 SELECT count(*) FROM channel_chat_session_binding
-WHERE installation_id = $1 AND channel_chat_id = $2`, install.ID, groupID).Scan(&sessions); err != nil {
+WHERE installation_id = $1 AND channel_chat_id = $2`, install.ID, groupID+groupRoutingSeparator+sender).Scan(&sessions); err != nil {
 		t.Fatalf("count sessions: %v", err)
 	}
 	if sessions != 1 {
-		t.Fatalf("display-name @ must create exactly one group session, got %d", sessions)
+		t.Fatalf("display-name @ must create exactly one (group,sender) session, got %d", sessions)
 	}
 	var drops int
 	if err := pool.QueryRow(ctx, `
@@ -816,6 +844,191 @@ WHERE installation_id = $1 AND channel_message_id = $2 AND drop_reason = 'not_ad
 	}
 	if len(names) != 1 || names[0] != botDisplayName {
 		t.Fatalf("bot_mention_names = %v, want [%s]", names, botDisplayName)
+	}
+}
+
+// TestInfoFlowDBGroupPerSenderIsolationAndDirectedReply is the A12/A13 closure:
+// two people @ the bot in the SAME group must land in two different
+// chat_sessions (group isolated per sender), and each outbound reply must carry
+// an AT element naming its own asker while addressing the real group id.
+func TestInfoFlowDBGroupPerSenderIsolationAndDirectedReply(t *testing.T) {
+	pool := infoflowDB(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	queries := db.New(pool)
+	fx := dbfx.New(pool, "", "")
+	suffix := util.UUIDToString(dbid.NewV7())
+	fx.UserID = fx.User(t, "Owner", "infoflow-n42-"+suffix+"@multica.test")
+	fx.WorkspaceID = fx.Workspace(t, "InfoFlow N42", "infoflow-n42-"+suffix)
+	fx.Member(t, fx.WorkspaceID, fx.UserID, "owner")
+	runtimeID := fx.Runtime(t, "Runtime")
+	agentID := fx.Agent(t, "Agent", runtimeID)
+	fx.Cleanup(t, "DELETE FROM channel_installation WHERE workspace_id = $1", fx.WorkspaceID)
+
+	// Numeric: the group send body validates both toid and agentid as numbers,
+	// and InstallService uses the application id as the agent id.
+	appID := "145" + numericSuffix(suffix)
+	const botUserID = "4105001274"
+	srv, rec := infoflowTokenServer(t)
+	box, err := secretbox.New(bytes.Repeat([]byte{0x4E}, secretbox.KeySize))
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc, err := NewInstallService(queries, pool, box, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.http = srv.Client()
+	svc.apiBase = srv.URL
+	install, err := svc.RegisterBYO(ctx, RegisterBYOParams{
+		WorkspaceID:   util.MustParseUUID(fx.WorkspaceID),
+		AgentID:       util.MustParseUUID(agentID),
+		InitiatorID:   util.MustParseUUID(fx.UserID),
+		ApplicationID: appID,
+		AppKey:        "key-" + suffix,
+		AppSecret:     "secret-" + suffix,
+		BotUserID:     botUserID,
+	})
+	if err != nil {
+		t.Fatalf("RegisterBYO: %v", err)
+	}
+
+	router := engine.NewRouter(infoflowTestIssues{}, infoflowTestTasks{}, queries, engine.RouterConfig{})
+	router.Register(TypeInfoFlow, NewResolverSet(queries, pool, nil, nil))
+
+	groupID := "1257" + numericSuffix(suffix)
+	alice := "alice-" + suffix
+	bob := "bob-" + suffix
+	deliver := func(sender, msgID string) {
+		t.Helper()
+		raw := json.RawMessage(`{"agentid":"` + appID + `","eventtype":"MESSAGE_RECEIVE","groupid":"` + groupID +
+			`","message":{"header":{"fromuserid":"` + sender + `","toid":"` + groupID +
+			`","totype":"GROUP","msgtype":"MIXED","messageid":"` + msgID + `"},"body":[{"type":"AT","atuserids":["` + botUserID + `"]},{"type":"TEXT","content":"@bot help"}]}}`)
+		msg, _, ok := inboundFromPayloadReason(raw, appID, botUserID)
+		if !ok {
+			t.Fatalf("adapter refused to normalize %s", msgID)
+		}
+		if !msg.AddressedToBot {
+			t.Fatalf("%s must be addressed to the bot", msgID)
+		}
+		if msg.MessageID == "" {
+			msg.MessageID = msgID
+		}
+		if err := router.Handle(ctx, msg); err != nil {
+			t.Fatalf("router.Handle(%s): %v", msgID, err)
+		}
+	}
+	deliver(alice, "n42-a-"+suffix)
+	deliver(bob, "n42-b-"+suffix)
+
+	// Two senders in one group ⇒ two distinct sessions, keyed by group:sender.
+	var keys []string
+	rows, err := pool.Query(ctx, `
+SELECT channel_chat_id FROM channel_chat_session_binding
+WHERE installation_id = $1 AND chat_type = 'group' ORDER BY channel_chat_id`, install.ID)
+	if err != nil {
+		t.Fatalf("read group keys: %v", err)
+	}
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			t.Fatal(err)
+		}
+		keys = append(keys, key)
+	}
+	rows.Close()
+	wantKeys := []string{groupID + ":" + alice, groupID + ":" + bob}
+	sort.Strings(wantKeys)
+	if len(keys) != 2 || keys[0] != wantKeys[0] || keys[1] != wantKeys[1] {
+		t.Fatalf("group session keys = %v, want %v (per-sender isolation)", keys, wantKeys)
+	}
+
+	// Directed outbound: load each binding, drive the real outbound path, and
+	// assert the group body @s that binding's own sender while toid is the group.
+	for _, tc := range []struct{ sender, msgID string }{{alice, "n42-a-" + suffix}, {bob, "n42-b-" + suffix}} {
+		var binding db.ChannelChatSessionBinding
+		var scID pgtype.UUID
+		if err := pool.QueryRow(ctx, `
+SELECT id, chat_session_id, installation_id, channel_type, channel_chat_id, chat_type, config
+FROM channel_chat_session_binding
+WHERE installation_id = $1 AND channel_chat_id = $2`, install.ID, groupID+":"+tc.sender).Scan(
+			&binding.ID, &scID, &binding.InstallationID, &binding.ChannelType,
+			&binding.ChannelChatID, &binding.ChatType, &binding.Config); err != nil {
+			t.Fatalf("load binding for %s: %v", tc.sender, err)
+		}
+		taskID := fx.Task(t, agentID, dbfx.Cols{
+			"status":          "completed",
+			"chat_session_id": util.UUIDToString(scID),
+			"runtime_id":      runtimeID,
+		})
+		if _, err := pool.Exec(ctx, `
+INSERT INTO channel_task_delivery (
+    task_id, binding_id, installation_id, channel_type, channel_chat_id, chat_type,
+    channel_message_id, channel_sender_id, route_revision, config
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 0, $9)`,
+			taskID, util.UUIDToString(binding.ID), util.UUIDToString(install.ID), string(TypeInfoFlow),
+			binding.ChannelChatID, binding.ChatType, tc.msgID, tc.sender, string(binding.Config)); err != nil {
+			t.Fatalf("insert delivery: %v", err)
+		}
+		bus := events.New()
+		outbound := NewOutbound(queries, box.Open, NewClient(srv.Client(), srv.URL), nil)
+		outbound.Register(bus)
+		bus.Publish(events.Event{
+			Type:          protocol.EventChatDone,
+			TaskID:        taskID,
+			ChatSessionID: util.UUIDToString(scID),
+			Payload: protocol.ChatDonePayload{
+				TaskID:        taskID,
+				ChatSessionID: util.UUIDToString(scID),
+				Content:       "reply to " + tc.sender,
+			},
+		})
+	}
+
+	// Every group send went to groupmsgsend and carried its own asker's AT.
+	paths, bodies := rec.sentPathsAndBodies()
+	if len(paths) != 2 {
+		t.Fatalf("outbound sends = %v, want 2 group sends", paths)
+	}
+	for i, path := range paths {
+		if path != "/robot/msg/groupmsgsend" {
+			t.Fatalf("send %d path = %q, want groupmsgsend", i, path)
+		}
+	}
+	aliceBody, bobBody := "", ""
+	for _, b := range bodies {
+		switch {
+		case strings.Contains(b, alice):
+			aliceBody = b
+		case strings.Contains(b, bob):
+			bobBody = b
+		}
+	}
+	if aliceBody == "" || bobBody == "" {
+		t.Fatalf("each outbound group body must @ its own asker; bodies=%v", bodies)
+	}
+	for sender, b := range map[string]string{alice: aliceBody, bob: bobBody} {
+		var parsed map[string]any
+		if err := json.Unmarshal([]byte(b), &parsed); err != nil {
+			t.Fatalf("decode send body: %v", err)
+		}
+		message := parsed["message"].(map[string]any)
+		header := message["header"].(map[string]any)
+		if fmt.Sprint(header["toid"]) != groupID {
+			t.Fatalf("%s reply toid = %v, want the real group id %s", sender, header["toid"], groupID)
+		}
+		elems := message["body"].([]any)
+		if len(elems) != 2 {
+			t.Fatalf("%s reply body = %+v, want AT + TEXT", sender, elems)
+		}
+		at := elems[0].(map[string]any)
+		if at["type"] != "AT" {
+			t.Fatalf("%s reply first element must be AT, got %+v", sender, at)
+		}
+		ids := at["atuserids"].([]any)
+		if len(ids) != 1 || fmt.Sprint(ids[0]) != sender {
+			t.Fatalf("%s reply atuserids = %v, want [%s]", sender, ids, sender)
+		}
 	}
 }
 

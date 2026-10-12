@@ -132,6 +132,54 @@ func TestSendBodyValidation(t *testing.T) {
 	}
 }
 
+// N42: a group reply carries an AT element naming the asker ahead of the TEXT
+// body; a group reply without a mention target stays a plain TEXT body, and the
+// 1:1 path is unchanged (no AT).
+func TestGroupSendBodyMentionsAsker(t *testing.T) {
+	body, err := buildSendBody(infoflowSendTarget{ChatType: "group", ChatID: "12572761", MentionUserID: "alice"}, "14534", "here you go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg := body["message"].(map[string]any)
+	elements := msg["body"].([]map[string]any)
+	if len(elements) != 2 {
+		t.Fatalf("group body must be AT + TEXT, got %+v", elements)
+	}
+	at := elements[0]
+	if at["type"] != "AT" || at["atall"] != false {
+		t.Fatalf("first element must be a non-broadcast AT, got %+v", at)
+	}
+	ids, ok := at["atuserids"].([]string)
+	if !ok || len(ids) != 1 || ids[0] != "alice" {
+		t.Fatalf("atuserids = %+v, want [alice]", at["atuserids"])
+	}
+	if elements[1]["type"] != "TEXT" || elements[1]["content"] != "here you go" {
+		t.Fatalf("second element must be the reply text, got %+v", elements[1])
+	}
+
+	// No mention target → plain TEXT only (legacy binding must not break).
+	plain, err := buildSendBody(infoflowSendTarget{ChatType: "group", ChatID: "12572761"}, "14534", "hi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	plainElements := plain["message"].(map[string]any)["body"].([]map[string]any)
+	if len(plainElements) != 1 || plainElements[0]["type"] != "TEXT" {
+		t.Fatalf("group body without a mention target must be TEXT only, got %+v", plainElements)
+	}
+
+	// 1:1 body never gains an AT, even if MentionUserID is set by mistake.
+	p2p, err := buildSendBody(infoflowSendTarget{ChatType: "p2p", ChatID: "u1", SenderID: "u1", MentionUserID: "u1"}, "14534", "hi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := p2p["message"]; ok {
+		t.Fatalf("1:1 body must use the app send shape, got %+v", p2p)
+	}
+	if _, ok := p2p["text"]; !ok {
+		t.Fatalf("1:1 body missing text: %+v", p2p)
+	}
+}
+
 func TestSessionRoutingAndOutboundTarget(t *testing.T) {
 	p2p := channel.InboundMessage{Source: channel.Source{ChatType: channel.ChatTypeP2P, ChatID: "u1", SenderID: "u1"}}
 	key, cfgRaw := infoflowSessionRouting(p2p)

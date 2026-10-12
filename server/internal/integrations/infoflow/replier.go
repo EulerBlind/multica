@@ -239,12 +239,20 @@ func (r *OutboundReplier) sendToTarget(ctx context.Context, inst engine.Resolved
 
 // targetFromMessage builds the reply target from the inbound message's own
 // routing identity (used for immediate binding/status replies, before any chat
-// binding exists).
+// binding exists). For a group the reply @ mentions the sender, matching the
+// bound outbound path (outboundTarget) so both shapes stay identical.
 func targetFromMessage(msg channel.InboundMessage) infoflowSendTarget {
-	target := infoflowSendTarget{ChatType: string(channel.ChatTypeGroup), ChatID: msg.Source.ChatID}
+	groupID, sender, _ := splitGroupRoutingKey(msg.Source.ChatID)
+	target := infoflowSendTarget{ChatType: string(channel.ChatTypeGroup), ChatID: groupID}
 	if msg.Source.ChatType == channel.ChatTypeP2P {
 		target.ChatType = string(channel.ChatTypeP2P)
 		target.SenderID = msg.Source.SenderID
+		return target
+	}
+	// Group: @ the person who asked (SenderID already carries the fromuserid).
+	target.MentionUserID = strings.TrimSpace(msg.Source.SenderID)
+	if target.MentionUserID == "" {
+		target.MentionUserID = sender
 	}
 	return target
 }

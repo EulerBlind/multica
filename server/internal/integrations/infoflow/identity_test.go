@@ -122,7 +122,7 @@ func TestResolveSenderBindingToNonMemberFails(t *testing.T) {
 }
 
 // Single-chat sessions are isolated per user: two senders in the same bot must
-// not share a Multica chat. Group chat stays keyed by the group id.
+// not share a Multica chat.
 func TestSessionRoutingIsolatesSingleChatPerSender(t *testing.T) {
 	keyA, cfgA := infoflowSessionRouting(infoflowMessage(channel.ChatTypeP2P, "u1", "u1"))
 	keyB, cfgB := infoflowSessionRouting(infoflowMessage(channel.ChatTypeP2P, "u2", "u2"))
@@ -138,16 +138,69 @@ func TestSessionRoutingIsolatesSingleChatPerSender(t *testing.T) {
 			t.Fatalf("single-chat routing config chat_type = %q", cfg.ChatType)
 		}
 	}
+}
 
+// N42: a group is isolated per (group, sender) so A's follow-ups never land in
+// B's transcript, while the routing config still carries the REAL group id as
+// ChatID and names the sender as the AT target.
+func TestSessionRoutingIsolatesGroupPerSender(t *testing.T) {
 	groupKey, groupCfgRaw := infoflowSessionRouting(infoflowMessage(channel.ChatTypeGroup, "12572761", "u1"))
-	if groupKey != "12572761" {
-		t.Fatalf("group binding key = %q, want the group id", groupKey)
+	if groupKey != "12572761:u1" {
+		t.Fatalf("group binding key = %q, want 12572761:u1", groupKey)
+	}
+	otherKey, _ := infoflowSessionRouting(infoflowMessage(channel.ChatTypeGroup, "12572761", "u2"))
+	if otherKey != "12572761:u2" {
+		t.Fatalf("second group sender key = %q, want 12572761:u2", otherKey)
+	}
+	if groupKey == otherKey {
+		t.Fatal("two senders in the same group must not share a binding key")
 	}
 	var groupCfg infoflowBindingConfig
 	if err := json.Unmarshal(groupCfgRaw, &groupCfg); err != nil {
 		t.Fatal(err)
 	}
 	if groupCfg.ChatType != string(channel.ChatTypeGroup) || groupCfg.ChatID != "12572761" {
-		t.Fatalf("group routing config = %+v", groupCfg)
+		t.Fatalf("group routing config must keep the real group id as ChatID, got %+v", groupCfg)
+	}
+	if groupCfg.SenderID != "u1" || groupCfg.MentionUserID != "u1" {
+		t.Fatalf("group routing config must carry the sender as identity + AT target, got %+v", groupCfg)
+	}
+}
+
+// N42: the outbound target resolves the composite key back to the real group id
+// plus the AT target, for both the new composite key and a legacy plain id.
+func TestOutboundTargetResolvesGroupRoutingKey(t *testing.T) {
+	routingKey, cfg := infoflowSessionRouting(infoflowMessage(channel.ChatTypeGroup, "12572761", "alice"))
+	target := outboundTarget(db.ChannelChatSessionBinding{
+		ChannelType:   "infoflow",
+		ChannelChatID: routingKey,
+		ChatType:      string(channel.ChatTypeGroup),
+		Config:        cfg,
+	})
+	if target.ChatID != "12572761" {
+		t.Fatalf("outbound ChatID = %q, want the real group id (never the composite key)", target.ChatID)
+	}
+	if target.MentionUserID != "alice" {
+		t.Fatalf("outbound MentionUserID = %q, want alice", target.MentionUserID)
+	}
+
+	// Legacy group binding: plain group id key, no config → still addresses the
+	// real group with no AT (config never carried a sender).
+	legacy := outboundTarget(db.ChannelChatSessionBinding{
+		ChannelType:   "infoflow",
+		ChannelChatID: "12572761",
+		ChatType:      string(channel.ChatTypeGroup),
+	})
+	if legacy.ChatID != "12572761" || legacy.MentionUserID != "" {
+		t.Fatalf("legacy group target = %+v, want plain group id with no AT", legacy)
+	}
+
+	// A legacy value that happens to be composite is split defensively.
+	legacyComposite := outboundTarget(db.ChannelChatSessionBinding{
+		ChannelChatID: "12572761:bob",
+		ChatType:      string(channel.ChatTypeGroup),
+	})
+	if legacyComposite.ChatID != "12572761" || legacyComposite.MentionUserID != "bob" {
+		t.Fatalf("legacy composite target = %+v, want 12572761 + bob", legacyComposite)
 	}
 }
