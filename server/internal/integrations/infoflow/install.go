@@ -45,6 +45,10 @@ type RegisterBYOParams struct {
 	AppKey        string
 	AppSecret     string
 	BotUserID     string
+	// BotMentionNames are optional display names the robot may be @-mentioned
+	// by. InfoFlow's group AT element usually carries only the display name, so
+	// these let an installation match mentions without a member-list lookup.
+	BotMentionNames string
 }
 
 type InstallService struct {
@@ -156,6 +160,7 @@ func (s *InstallService) RegisterBYO(ctx context.Context, p RegisterBYOParams) (
 		AppKey:             appKey,
 		AppSecretEncrypted: base64.StdEncoding.EncodeToString(sealed),
 		BotUserID:          strings.TrimSpace(p.BotUserID),
+		BotMentionNames:    normalizeMentionNames(p.BotMentionNames),
 		AgentID:            applicationID,
 	})
 	if err != nil {

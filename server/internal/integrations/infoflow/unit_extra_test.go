@@ -544,20 +544,20 @@ func TestAddressedToBotRequiresSignalWithoutBotUserID(t *testing.T) {
 		return raw
 	}
 	named := parse(`[{"type":"AT","name":"someone"}]`)
-	if addressedToBot(named, "", "MESSAGE_RECEIVE") {
+	if addressedToBot(named, newIdentitySet("", nil), "MESSAGE_RECEIVE") {
 		t.Fatal("a named @ must not count as addressed-to-bot when no bot user id is configured")
 	}
 	atAll := parse(`[{"type":"AT","atall":true}]`)
-	if !addressedToBot(atAll, "", "MESSAGE_RECEIVE") {
+	if !addressedToBot(atAll, newIdentitySet("", nil), "MESSAGE_RECEIVE") {
 		t.Fatal("@all must count as addressed-to-bot")
 	}
 	matched := parse(`[{"type":"AT","userid":"bot-9"}]`)
-	if !addressedToBot(matched, "bot-9", "MESSAGE_RECEIVE") {
+	if !addressedToBot(matched, newIdentitySet("bot-9", nil), "MESSAGE_RECEIVE") {
 		t.Fatal("a matching @userid must count as addressed-to-bot")
 	}
 	// Fail-closed: an ALL_MESSAGE_FORWARD subscription only decides what we
 	// receive; it must NOT by itself mark an unmentioned message as addressed.
-	if addressedToBot(named, "", "ALL_MESSAGE_FORWARD") {
+	if addressedToBot(named, newIdentitySet("", nil), "ALL_MESSAGE_FORWARD") {
 		t.Fatal("ALL_MESSAGE_FORWARD without a mention must NOT be addressed (fail-closed)")
 	}
 }
@@ -580,30 +580,40 @@ func TestAddressedToBotReadsAtUserIDs(t *testing.T) {
 		return raw
 	}
 	cases := []struct {
-		name      string
-		body      string
-		botUserID string
-		want      bool
+		name         string
+		body         string
+		botUserID    string
+		mentionNames []string
+		resolved     []string
+		want         bool
 	}{
-		{"atuserids matches bot", `[{"type":"AT","atuserids":["4105001274"]},{"type":"TEXT","content":"hi"}]`, "4105001274", true},
-		{"atuserids matches among many", `[{"type":"AT","atuserids":["u1","4105001274"]}]`, "4105001274", true},
-		{"atuserids other user only", `[{"type":"AT","atuserids":["someone-else"]},{"type":"TEXT","content":"hi"}]`, "4105001274", false},
-		{"atall is addressed", `[{"type":"AT","atall":true}]`, "4105001274", true},
-		{"atall with empty bot id still addressed", `[{"type":"AT","atall":true}]`, "", true},
-		{"plain text no AT", `[{"type":"TEXT","content":"hello group"}]`, "4105001274", false},
-		{"AT without target and no bot id", `[{"type":"AT","name":"someone"}]`, "", false},
+		{name: "atuserids matches bot", body: `[{"type":"AT","atuserids":["4105001274"]},{"type":"TEXT","content":"hi"}]`, botUserID: "4105001274", want: true},
+		{name: "atuserids matches among many", body: `[{"type":"AT","atuserids":["u1","4105001274"]}]`, botUserID: "4105001274", want: true},
+		{name: "atuserids other user only", body: `[{"type":"AT","atuserids":["someone-else"]},{"type":"TEXT","content":"hi"}]`, botUserID: "4105001274", want: false},
+		{name: "atall is addressed", body: `[{"type":"AT","atall":true}]`, botUserID: "4105001274", want: true},
+		{name: "atall with empty bot id still addressed", body: `[{"type":"AT","atall":true}]`, want: true},
+		{name: "plain text no AT", body: `[{"type":"TEXT","content":"hello group"}]`, botUserID: "4105001274", want: false},
+		{name: "AT without target and no bot id", body: `[{"type":"AT","name":"someone"}]`, want: false},
 		// Substring regression: a longer id containing the bot id must NOT match.
-		{"substring must not match", `[{"type":"AT","userid":"x4105001274y"}]`, "4105001274", false},
+		{name: "substring must not match", body: `[{"type":"AT","userid":"x4105001274y"}]`, botUserID: "4105001274", want: false},
+		// N40: real InfoFlow group @ carries only the robot DISPLAY NAME.
+		{name: "display name via bot_mention_names", body: `[{"type":"AT","name":"Multica"}]`, mentionNames: []string{"Multica"}, want: true},
+		{name: "display name case-insensitive", body: `[{"type":"AT","name":"multica"}]`, mentionNames: []string{"Multica"}, want: true},
+		{name: "display name via auto-resolved identity", body: `[{"type":"AT","name":"Euler's claw"}]`, botUserID: "4105001274", resolved: []string{"4100104388", "Euler's claw"}, want: true},
+		// bot_user_id wrongly holding the GROUP id: the name still matches.
+		{name: "group id misconfig still matches by name", body: `[{"type":"AT","name":"Multica"}]`, botUserID: "12572761", mentionNames: []string{"Multica"}, want: true},
+		{name: "no candidate token and nothing configured is fail-closed", body: `[{"type":"AT"}]`, want: false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := addressedToBot(parse(tc.body, false), tc.botUserID, "MESSAGE_RECEIVE"); got != tc.want {
+			self := newIdentitySet(tc.botUserID, tc.mentionNames).withResolved(tc.resolved)
+			if got := addressedToBot(parse(tc.body, false), self, "MESSAGE_RECEIVE"); got != tc.want {
 				t.Fatalf("addressedToBot = %v, want %v (body=%s botUserID=%q)", got, tc.want, tc.body, tc.botUserID)
 			}
 		})
 	}
 	// A reply to the bot is addressed without any @.
-	if !addressedToBot(parse(`[{"type":"TEXT","content":"thanks"}]`, true), "", "MESSAGE_RECEIVE") {
+	if !addressedToBot(parse(`[{"type":"TEXT","content":"thanks"}]`, true), newIdentitySet("", nil), "MESSAGE_RECEIVE") {
 		t.Fatal("a reply to the bot must be addressed")
 	}
 }

@@ -76,6 +76,10 @@ type RegisterInfoFlowBYORequest struct {
 	AppKey        string `json:"app_key"`
 	AppSecret     string `json:"app_secret"`
 	BotUserID     string `json:"bot_user_id,omitempty"`
+	// BotMentionNames is an optional comma-separated list of display names the
+	// robot may be @-mentioned by (InfoFlow AT elements commonly carry only the
+	// display name, not the robot's imId).
+	BotMentionNames string `json:"bot_mention_names,omitempty"`
 }
 
 func (h *Handler) RegisterInfoFlowBYO(w http.ResponseWriter, r *http.Request) {
@@ -116,13 +120,14 @@ func (h *Handler) RegisterInfoFlowBYO(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	row, err := h.InfoFlowInstall.RegisterBYO(r.Context(), infoflow.RegisterBYOParams{
-		WorkspaceID:   wsUUID,
-		AgentID:       agentUUID,
-		InitiatorID:   initiatorUUID,
-		ApplicationID: body.ApplicationID,
-		AppKey:        body.AppKey,
-		AppSecret:     body.AppSecret,
-		BotUserID:     body.BotUserID,
+		WorkspaceID:     wsUUID,
+		AgentID:         agentUUID,
+		InitiatorID:     initiatorUUID,
+		ApplicationID:   body.ApplicationID,
+		AppKey:          body.AppKey,
+		AppSecret:       body.AppSecret,
+		BotUserID:       body.BotUserID,
+		BotMentionNames: body.BotMentionNames,
 	})
 	if err != nil {
 		switch {

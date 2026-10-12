@@ -55,6 +55,7 @@ type installConfig struct {
 	AppKey             string `json:"app_key"`
 	AppSecretEncrypted string `json:"app_secret_encrypted"`
 	BotUserID          string `json:"bot_user_id,omitempty"`
+	BotMentionNames    string `json:"bot_mention_names,omitempty"`
 	AgentID            string `json:"agent_id,omitempty"`
 }
 
@@ -65,7 +66,13 @@ type credentials struct {
 	AppKey    string
 	AppSecret string
 	BotUserID string
-	AgentID   string
+	// BotMentionNames are the display names the bot may be @-mentioned by.
+	// InfoFlow's group AT element commonly carries only the robot's display
+	// name (not its imId), and the display name changes when the robot is
+	// renamed, so this is a configurable fallback next to the authoritative
+	// BotUserID. Comma-separated in the stored JSON.
+	BotMentionNames []string
+	AgentID         string
 }
 
 // Decrypter turns stored ciphertext into plaintext. The wiring injects a
@@ -89,12 +96,35 @@ func decodeCredentials(raw json.RawMessage, decrypt Decrypter) (credentials, err
 		return credentials{}, fmt.Errorf("decrypt app secret: %w", err)
 	}
 	return credentials{
-		AppID:     cfg.AppID,
-		AppKey:    cfg.AppKey,
-		AppSecret: appSecret,
-		BotUserID: cfg.BotUserID,
-		AgentID:   cfg.AgentID,
+		AppID:           cfg.AppID,
+		AppKey:          cfg.AppKey,
+		AppSecret:       appSecret,
+		BotUserID:       cfg.BotUserID,
+		BotMentionNames: splitMentionNames(cfg.BotMentionNames),
+		AgentID:         cfg.AgentID,
 	}, nil
+}
+
+// splitMentionNames parses the comma-separated bot_mention_names config into a
+// trimmed, non-empty list.
+func splitMentionNames(raw string) []string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if name := strings.TrimSpace(part); name != "" {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+// normalizeMentionNames canonicalizes a comma-separated bot_mention_names
+// value for storage (trimmed, de-duplicated, comma-joined).
+func normalizeMentionNames(raw string) string {
+	return strings.Join(splitMentionNames(raw), ",")
 }
 
 // decryptToken base64-decodes the stored ciphertext (tolerating the MIME

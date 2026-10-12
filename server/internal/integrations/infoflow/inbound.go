@@ -50,13 +50,26 @@ const (
 )
 
 func inboundFromPayload(raw json.RawMessage, appID, botUserID string) (channel.InboundMessage, bool) {
-	msg, _, ok := inboundFromPayloadReason(raw, appID, botUserID)
+	return inboundFromPayloadWithIdentity(raw, appID, newIdentitySet(botUserID, nil))
+}
+
+// inboundFromPayloadWithIdentity normalizes a payload using the given self
+// identity set. The channel layer passes an identity set enriched with
+// group-resolved tokens; tests can pass a bare configured set.
+func inboundFromPayloadWithIdentity(raw json.RawMessage, appID string, self identitySet) (channel.InboundMessage, bool) {
+	msg, _, ok := inboundFromPayloadReasonWithIdentity(raw, appID, self)
 	return msg, ok
 }
 
 // inboundFromPayloadReason is inboundFromPayload plus the drop reason, used by
 // the receive loop to log actionable diagnostics (N15 W1).
 func inboundFromPayloadReason(raw json.RawMessage, appID, botUserID string) (channel.InboundMessage, string, bool) {
+	return inboundFromPayloadReasonWithIdentity(raw, appID, newIdentitySet(botUserID, nil))
+}
+
+// inboundFromPayloadReasonWithIdentity is inboundFromPayloadReason over an
+// explicit identity set (configured + group-resolved).
+func inboundFromPayloadReasonWithIdentity(raw json.RawMessage, appID string, self identitySet) (channel.InboundMessage, string, bool) {
 	var payload infoflowRaw
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		return channel.InboundMessage{}, dropReasonMalformed, false
@@ -67,7 +80,7 @@ func inboundFromPayloadReason(raw json.RawMessage, appID, botUserID string) (cha
 	}
 	payload.AppID = rawAppID
 	if isGroupPayload(payload) {
-		return normalizeGroupPayloadReason(payload, botUserID)
+		return normalizeGroupPayloadReasonWithIdentity(payload, self)
 	}
 	msg, ok := normalizePrivatePayload(payload)
 	if !ok {
@@ -106,11 +119,19 @@ func normalizePrivatePayload(payload infoflowRaw) (channel.InboundMessage, bool)
 }
 
 func normalizeGroupPayload(payload infoflowRaw, botUserID string) (channel.InboundMessage, bool) {
-	msg, _, ok := normalizeGroupPayloadReason(payload, botUserID)
+	return normalizeGroupPayloadWithIdentity(payload, newIdentitySet(botUserID, nil))
+}
+
+func normalizeGroupPayloadWithIdentity(payload infoflowRaw, self identitySet) (channel.InboundMessage, bool) {
+	msg, _, ok := normalizeGroupPayloadReasonWithIdentity(payload, self)
 	return msg, ok
 }
 
 func normalizeGroupPayloadReason(payload infoflowRaw, botUserID string) (channel.InboundMessage, string, bool) {
+	return normalizeGroupPayloadReasonWithIdentity(payload, newIdentitySet(botUserID, nil))
+}
+
+func normalizeGroupPayloadReasonWithIdentity(payload infoflowRaw, self identitySet) (channel.InboundMessage, string, bool) {
 	h := payload.Message.Header
 	groupID := anyString(payload.GroupID)
 	if groupID == "" {
@@ -140,7 +161,7 @@ func normalizeGroupPayloadReason(payload infoflowRaw, botUserID string) (channel
 		Text:           text,
 		CommandText:    text,
 		ReplyTo:        groupReplyTo(payload.Message),
-		AddressedToBot: addressedToBot(payload, botUserID, eventType),
+		AddressedToBot: addressedToBot(payload, self, eventType),
 		Raw:            mustJSON(payload),
 	}
 	// NOTE: an unaddressed group message is deliberately routed (ok=true). The
@@ -205,27 +226,22 @@ func flattenGroupText(body []map[string]any) string {
 //
 // Semantics are deliberately fail-CLOSED: only a positive, explicit mention of
 // the bot (or a reply to it) counts, so ordinary group chatter never reaches the
-// Agent. Two independent facts must hold:
+// Agent.
 //
-//  1. the message actually mentions the bot, and
-//  2. the installation knows which user id the bot is (botUserID).
+// Identification is a two-tier exact match against a set of "self identities":
 //
-// If botUserID is unset we cannot positively identify the bot, so the message is
-// NOT addressed (except for an explicit @all) — this is the case that previously
-// opened the gate and let every group message through.
+//  1. the configured bot_user_id (the robot's own InfoFlow user id), and
+//  2. any configured bot_mention_names plus names/ids resolved from the group
+//     membership (see groupSelfIdentity) — InfoFlow commonly puts only the
+//     robot's DISPLAY NAME in the AT element, and the name changes on rename.
 //
-// The mention shape follows the InfoFlow group-message body, whose AT element is
-// documented as `{ "type": "AT", "atall": <bool>, "atuserids": [<id>...] }`.
-// Deployments have also been observed putting the target in userId/userid/uid/id
-// /name, so those are accepted as alternates. Matching is EXACT against the
-// configured bot id — never a substring — because a substring test made
-// "4105001274" match unrelated ids.
+// Matching is EXACT (trimmed, then case-insensitive as a fallback) — never a
+// substring, because a substring test made "4105001274" match unrelated ids.
+// `@all` always addresses the bot; a reply to the bot always addresses it.
 //
-// ALL_MESSAGE_FORWARD (an app subscribed to every group message) does NOT imply
-// the bot was addressed; that subscription only decides what we receive, not
-// what we should act on. Such messages fall through to the mention check and are
-// dropped as not_addressed_in_group when the bot is not named.
-func addressedToBot(payload infoflowRaw, botUserID string, eventType string) bool {
+// The function is pure: all I/O (member resolution) and caching happen in the
+// caller, which passes the resolved identities in `extra`.
+func addressedToBot(payload infoflowRaw, self identitySet, eventType string) bool {
 	if payload.Message == nil {
 		return false
 	}
@@ -233,7 +249,6 @@ func addressedToBot(payload infoflowRaw, botUserID string, eventType string) boo
 	if payload.Message.Reply != nil {
 		return true
 	}
-	botUserID = strings.TrimSpace(botUserID)
 	for _, item := range payload.Message.Body {
 		if !strings.EqualFold(stringOrEmpty(item["type"]), "AT") {
 			continue
@@ -242,39 +257,92 @@ func addressedToBot(payload infoflowRaw, botUserID string, eventType string) boo
 		if atAll, _ := item["atall"].(bool); atAll {
 			return true
 		}
-		// Without a configured bot id we cannot positively match a named @,
-		// so stay closed rather than guessing.
-		if botUserID == "" {
-			continue
-		}
-		if atItemMentionsBot(item, botUserID) {
+		if atItemMentionsBot(item, self) {
 			return true
 		}
 	}
 	return false
 }
 
-// atItemMentionsBot reports whether one AT body element names the bot. It reads
-// the documented `atuserids` array first, then the alternate scalar shapes seen
-// in the wild, and compares each candidate EXACTLY against botUserID.
-func atItemMentionsBot(item map[string]any, botUserID string) bool {
-	if ids := stringListOrEmpty(item["atuserids"]); len(ids) > 0 {
-		for _, id := range ids {
-			if id == botUserID {
+// identitySet holds the tokens that identify the bot itself. configured comes
+// from the installation config (authoritative id + optional names); resolved
+// comes from the group membership lookup (imId + display name).
+type identitySet struct {
+	configured []string
+	resolved   []string
+}
+
+// newIdentitySet builds the set from the configured bot id and mention names.
+func newIdentitySet(botUserID string, mentionNames []string) identitySet {
+	out := make([]string, 0, 1+len(mentionNames))
+	if id := strings.TrimSpace(botUserID); id != "" {
+		out = append(out, id)
+	}
+	for _, name := range mentionNames {
+		if n := strings.TrimSpace(name); n != "" {
+			out = append(out, n)
+		}
+	}
+	return identitySet{configured: out}
+}
+
+// withResolved returns a copy carrying the identities resolved from a group.
+func (s identitySet) withResolved(tokens []string) identitySet {
+	if len(tokens) == 0 {
+		return s
+	}
+	merged := make([]string, 0, len(s.resolved)+len(tokens))
+	merged = append(merged, s.resolved...)
+	for _, token := range tokens {
+		if t := strings.TrimSpace(token); t != "" {
+			merged = append(merged, t)
+		}
+	}
+	return identitySet{configured: s.configured, resolved: merged}
+}
+
+// matches reports whether a candidate token identifies the bot (exact, then
+// case-insensitive).
+func (s identitySet) matches(candidate string) bool {
+	candidate = strings.TrimSpace(candidate)
+	if candidate == "" {
+		return false
+	}
+	for _, set := range [][]string{s.configured, s.resolved} {
+		for _, token := range set {
+			if token == candidate {
 				return true
 			}
 		}
 	}
-	candidates := []string{
-		stringOrEmpty(item["userid"]),
-		stringOrEmpty(item["userId"]),
-		stringOrEmpty(item["uid"]),
-		stringOrEmpty(item["id"]),
-		stringOrEmpty(item["name"]),
-		stringOrEmpty(item["label"]),
+	lower := strings.ToLower(candidate)
+	for _, set := range [][]string{s.configured, s.resolved} {
+		for _, token := range set {
+			if strings.ToLower(token) == lower {
+				return true
+			}
+		}
 	}
-	for _, candidate := range candidates {
-		if candidate != "" && candidate == botUserID {
+	return false
+}
+
+// empty reports whether no identity token is available at all; callers stay
+// fail-closed in that case.
+func (s identitySet) empty() bool {
+	return len(s.configured) == 0 && len(s.resolved) == 0
+}
+
+// atItemMentionsBot reports whether one AT body element names the bot. It reads
+// the documented `atuserids` array first, then the alternate scalar shapes seen
+// in the wild, and matches each candidate against the bot's identity set.
+func atItemMentionsBot(item map[string]any, self identitySet) bool {
+	for _, id := range stringListOrEmpty(item["atuserids"]) {
+		if self.matches(id) {
+			return true
+		}
+	}
+	for _, candidate := range []any{item["userid"], item["userId"], item["uid"], item["id"], item["name"], item["label"], item["content"]} {
+		if self.matches(stringOrEmpty(candidate)) {
 			return true
 		}
 	}

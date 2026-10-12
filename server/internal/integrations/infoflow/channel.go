@@ -18,13 +18,15 @@ import (
 // installation and owns lease/reconnect lifecycle; Connect blocks until the run
 // context is cancelled.
 type infoflowChannel struct {
-	appID     string
-	appKey    string
-	appSecret string
-	botUserID string
-	client    *Client
-	handler   channel.InboundHandler
-	logger    *slog.Logger
+	appID           string
+	appKey          string
+	appSecret       string
+	botUserID       string
+	botMentionNames []string
+	client          *Client
+	groupIdentity   *groupIdentityResolver
+	handler         channel.InboundHandler
+	logger          *slog.Logger
 }
 
 func (c *infoflowChannel) Type() channel.Type { return TypeInfoFlow }
@@ -85,7 +87,17 @@ func (c *infoflowChannel) Connect(ctx context.Context) error {
 				c.logger.InfoContext(ctx, "infoflow: dropped non-payload frame", "error", err)
 				return nil
 			}
-			msg, dropReason, ok := inboundFromPayloadReason(raw, c.appID, c.botUserID)
+			// Enrich the self-identity set with the group-scoped identity before
+			// normalization: InfoFlow's group AT element usually carries only
+			// the robot's DISPLAY NAME, which the configured id cannot match.
+			// Extra tokens are harmless for p2p (mention checking is skipped).
+			self := newIdentitySet(c.botUserID, c.botMentionNames)
+			if groupID := groupIDFromRaw(raw); groupID != "" && c.groupIdentity != nil {
+				if tokens, _ := c.groupIdentity.lookup(ctx, groupID); len(tokens) > 0 {
+					self = self.withResolved(tokens)
+				}
+			}
+			msg, dropReason, ok := inboundFromPayloadReasonWithIdentity(raw, c.appID, self)
 			if !ok {
 				// The payload could not even be turned into a message (missing
 				// sender/content/group id, or malformed). Name the reason so a
@@ -138,15 +150,34 @@ func newFactory(deps ChannelDeps) channel.Factory {
 			return nil, errors.New("infoflow: installation has empty app key or app secret")
 		}
 		return &infoflowChannel{
-			appID:     creds.AppID,
-			appKey:    creds.AppKey,
-			appSecret: creds.AppSecret,
-			botUserID: creds.BotUserID,
-			client:    client,
-			handler:   cfg.Handler,
-			logger:    logger,
+			appID:           creds.AppID,
+			appKey:          creds.AppKey,
+			appSecret:       creds.AppSecret,
+			botUserID:       creds.BotUserID,
+			botMentionNames: creds.BotMentionNames,
+			client:          client,
+			groupIdentity:   newGroupIdentityResolver(client, creds.AppKey, creds.AppSecret, creds.AppID),
+			handler:         cfg.Handler,
+			logger:          logger,
 		}, nil
 	}
+}
+
+// groupIDFromRaw extracts the group id from a raw frame payload without
+// committing to a full normalization (the group id may arrive top-level or in
+// the message header). Empty means p2p or not a group frame.
+func groupIDFromRaw(raw json.RawMessage) string {
+	var payload infoflowRaw
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return ""
+	}
+	if !isGroupPayload(payload) {
+		return ""
+	}
+	if groupID := anyString(payload.GroupID); groupID != "" {
+		return groupID
+	}
+	return anyString(payload.Message.Header.ToID)
 }
 
 var _ channel.Channel = (*infoflowChannel)(nil)

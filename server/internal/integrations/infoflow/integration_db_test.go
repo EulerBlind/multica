@@ -684,6 +684,141 @@ WHERE installation_id = $1 AND channel_chat_id = $2`, install.ID, allGroup).Scan
 	}
 }
 
+// TestInfoFlowDBDisplayNameGroupMentionIsIngested is the N40 closure: a real
+// InfoFlow group @ carries only the robot's DISPLAY NAME in the AT element
+// (imId is not sent), so an exact id match alone dropped every genuine mention.
+// Here bot_user_id is deliberately WRONG (it holds a group id, the actual
+// production misconfiguration) and the mention still has to be recognized via
+// either the configured bot_mention_names or the group member lookup. It also
+// asserts the diagnostic log's bot_user_id_configured is populated (the
+// channel_type-less lookup bug printed "" for a configured installation).
+func TestInfoFlowDBDisplayNameGroupMentionIsIngested(t *testing.T) {
+	pool := infoflowDB(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	queries := db.New(pool)
+	fx := dbfx.New(pool, "", "")
+	suffix := util.UUIDToString(dbid.NewV7())
+	fx.UserID = fx.User(t, "Owner", "infoflow-n40-"+suffix+"@multica.test")
+	fx.WorkspaceID = fx.Workspace(t, "InfoFlow N40", "infoflow-n40-"+suffix)
+	fx.Member(t, fx.WorkspaceID, fx.UserID, "owner")
+	runtimeID := fx.Runtime(t, "Runtime")
+	agentID := fx.Agent(t, "Agent", runtimeID)
+	fx.Cleanup(t, "DELETE FROM channel_installation WHERE workspace_id = $1", fx.WorkspaceID)
+
+	appID := "app-n40-" + suffix
+	// Deliberately the GROUP id, mirroring the observed production mistake.
+	const misconfiguredBotUserID = "12572761"
+	const botDisplayName = "Multica"
+	const botImID = "4100104388"
+
+	// The token server also answers the group memberList lookup, whose entries
+	// carry the bot's real imId/name (agentId == app id).
+	mux := http.NewServeMux()
+	mux.HandleFunc("/auth/app_access_token", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"code":"ok","data":{"app_access_token":"at_test","expire":7200}}`))
+	})
+	mux.HandleFunc(pathGroupMemberList, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"code":"ok","data":{"agentInfoList":[` +
+			`{"agentId":"99999","imId":"1234567890","name":"other bot"},` +
+			`{"agentId":"` + appID + `","imId":"` + botImID + `","name":"` + botDisplayName + `"}]}}`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	box, err := secretbox.New(bytes.Repeat([]byte{0x4E}, secretbox.KeySize))
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc, err := NewInstallService(queries, pool, box, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.http = srv.Client()
+	svc.apiBase = srv.URL
+	install, err := svc.RegisterBYO(ctx, RegisterBYOParams{
+		WorkspaceID:     util.MustParseUUID(fx.WorkspaceID),
+		AgentID:         util.MustParseUUID(agentID),
+		InitiatorID:     util.MustParseUUID(fx.UserID),
+		ApplicationID:   appID,
+		AppKey:          "key-" + suffix,
+		AppSecret:       "secret-" + suffix,
+		BotUserID:       misconfiguredBotUserID,
+		BotMentionNames: botDisplayName,
+	})
+	if err != nil {
+		t.Fatalf("RegisterBYO: %v", err)
+	}
+
+	router := engine.NewRouter(infoflowTestIssues{}, infoflowTestTasks{}, queries, engine.RouterConfig{})
+	router.Register(TypeInfoFlow, NewResolverSet(queries, pool, nil, nil))
+
+	// Deliver through the REAL adapter path, including the group identity
+	// resolver wired the way the channel wires it.
+	groupResolver := newGroupIdentityResolver(NewClient(srv.Client(), srv.URL), "key-"+suffix, "secret-"+suffix, appID)
+	groupID := "1257" + suffix[:6]
+	sender := "user-" + suffix
+	msgID := "msg-n40-name-" + suffix
+	body := `[{"type":"AT","name":"` + botDisplayName + `"},{"type":"TEXT","content":"@bot hello"}]`
+	raw := json.RawMessage(`{"agentid":"` + appID + `","eventtype":"MESSAGE_RECEIVE","groupid":"` + groupID +
+		`","message":{"header":{"fromuserid":"` + sender + `","toid":"` + groupID +
+		`","totype":"GROUP","msgtype":"MIXED","messageid":"` + msgID + `"},"body":` + body + `}}`)
+
+	self := newIdentitySet(misconfiguredBotUserID, []string{botDisplayName})
+	if resolved, _ := groupResolver.lookup(ctx, groupID); len(resolved) > 0 {
+		self = self.withResolved(resolved)
+	}
+	msg, _, ok := inboundFromPayloadReasonWithIdentity(raw, appID, self)
+	if !ok {
+		t.Fatalf("adapter refused to normalize %s", msgID)
+	}
+	if !msg.AddressedToBot {
+		t.Fatal("a display-name @ must be judged addressed-to-bot")
+	}
+	if msg.MessageID == "" {
+		msg.MessageID = msgID
+	}
+	if err := router.Handle(ctx, msg); err != nil {
+		t.Fatalf("router.Handle: %v", err)
+	}
+
+	// The mention reached the engine: a session keyed by the group id exists and
+	// no not_addressed_in_group audit row was written.
+	var sessions int
+	if err := pool.QueryRow(ctx, `
+SELECT count(*) FROM channel_chat_session_binding
+WHERE installation_id = $1 AND channel_chat_id = $2`, install.ID, groupID).Scan(&sessions); err != nil {
+		t.Fatalf("count sessions: %v", err)
+	}
+	if sessions != 1 {
+		t.Fatalf("display-name @ must create exactly one group session, got %d", sessions)
+	}
+	var drops int
+	if err := pool.QueryRow(ctx, `
+SELECT count(*) FROM channel_inbound_audit
+WHERE installation_id = $1 AND channel_message_id = $2 AND drop_reason = 'not_addressed_in_group'`,
+		install.ID, msgID).Scan(&drops); err != nil {
+		t.Fatalf("count drops: %v", err)
+	}
+	if drops != 0 {
+		t.Fatalf("display-name @ was wrongly dropped as not_addressed_in_group (%d rows)", drops)
+	}
+
+	// Diagnostics: configuredBotIdentity must read the row (the N40 bug dropped
+	// channel_type from the query, so it always returned "").
+	audit := &auditor{q: queries, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	botUserID, names, read := audit.configuredBotIdentity(ctx, install.ID)
+	if !read {
+		t.Fatal("configuredBotIdentity must succeed for a real installation")
+	}
+	if botUserID != misconfiguredBotUserID {
+		t.Fatalf("bot_user_id = %q, want %q", botUserID, misconfiguredBotUserID)
+	}
+	if len(names) != 1 || names[0] != botDisplayName {
+		t.Fatalf("bot_mention_names = %v, want [%s]", names, botDisplayName)
+	}
+}
+
 // TestInfoFlowDBSingleChatSessionIsolation is the A10 single-chat half: two
 // different InfoFlow users talking to the same bot must get two separate
 // sessions (keyed by their own user id), so one person never reads another's
