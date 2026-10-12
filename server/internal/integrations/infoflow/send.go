@@ -76,6 +76,17 @@ func (s *sender) sendText(ctx context.Context, target infoflowSendTarget, text s
 // MD element. Markdown send failures fall back to re-sending the SAME content as
 // plain TEXT so a rendering mismatch never drops the reply body. The AT mention
 // (when present) rides the first batch only.
+//
+// Delivery accounting (guards the N53 duplicate-send defect):
+//   - a batch is DELIVERED only when the gateway returns a success response we
+//     can read a message id from; those ids are what we report;
+//   - an explicit rejection (40061 length, 40000 permission/param, ...) means
+//     NOT delivered ⇒ eligible for re-send;
+//   - an UNKNOWN outcome (transport timeout/reset) is also treated as NOT
+//     delivered ⇒ re-sent. That is deliberately at-least-once: a duplicate is
+//     preferable to a silently missing part of the reply.
+//   - the markdown→TEXT fallback re-sends only the un-acked batches
+//     (batches[firstFailedIndex:]); already-acked batches are never re-sent.
 func (s *sender) sendChunked(ctx context.Context, target infoflowSendTarget, text string) ([]string, infoflowSendOutcome, error) {
 	if text == "" {
 		return nil, infoflowSendOutcome{}, nil
@@ -106,12 +117,20 @@ func (s *sender) sendChunked(ctx context.Context, target infoflowSendTarget, tex
 			// gateway refusing MD): re-send THE SAME content as plain TEXT so the
 			// reply body is not lost. Only if the TEXT retry also fails does the
 			// caller fall back to a visible notice.
+			//
+			// batches[0:i] were already acked, so the retry starts at the FIRST
+			// FAILED batch (batches[i:]) and never re-sends an accepted one — the
+			// N53 defect was re-sending from index 0 and duplicating the first
+			// batch. The AT is re-attached only when the first batch itself failed
+			// (i == 0).
 			if msgType == msgTypeMD {
-				retryIDs, retryErr := s.sendBatchesAsText(ctx, target, batches)
-				if retryErr == nil {
-					return retryIDs, infoflowSendOutcome{MsgType: msgTypeText, DeliveredBatches: len(retryIDs)}, nil
+				retryIDs, retryErr := s.sendBatchesAsText(ctx, target, batches[i:], i == 0)
+				delivered := append(append([]string(nil), ids...), retryIDs...)
+				outcome := infoflowSendOutcome{MsgType: msgTypeText, DeliveredBatches: len(delivered)}
+				if retryErr != nil {
+					return delivered, outcome, fmt.Errorf("post infoflow reply as markup failed then text retry failed: %w", retryErr)
 				}
-				return retryIDs, infoflowSendOutcome{MsgType: msgTypeText, DeliveredBatches: len(retryIDs)}, fmt.Errorf("post infoflow reply as markup failed then text retry failed: %w", retryErr)
+				return delivered, outcome, nil
 			}
 			return ids, infoflowSendOutcome{MsgType: msgType, DeliveredBatches: len(ids)}, err
 		}
@@ -127,13 +146,17 @@ func (s *sender) sendChunked(ctx context.Context, target infoflowSendTarget, tex
 	return ids, infoflowSendOutcome{MsgType: msgType, DeliveredBatches: len(ids)}, nil
 }
 
-// sendBatchesAsText re-sends a prepared batch list as plain TEXT (the markdown
-// fallback), keeping the AT on the first batch and the ordering/delay rules.
-func (s *sender) sendBatchesAsText(ctx context.Context, target infoflowSendTarget, batches []string) ([]string, error) {
+// sendBatchesAsText re-sends a batch list as plain TEXT (the markdown fallback).
+// The caller passes ONLY the batches that were not yet acked. attachMention
+// decides whether the first element of this sequence keeps the AT: it is true
+// only when the sequence starts at the reply's very first batch (the original
+// first batch was never delivered); otherwise the AT already landed on an
+// earlier batch and must not repeat.
+func (s *sender) sendBatchesAsText(ctx context.Context, target infoflowSendTarget, batches []string, attachMention bool) ([]string, error) {
 	ids := make([]string, 0, len(batches))
 	for i, batch := range batches {
 		batchTarget := target
-		if i > 0 {
+		if i > 0 || !attachMention {
 			batchTarget.MentionUserID = ""
 		}
 		id, err := s.sendOnce(ctx, batchTarget, batch, msgTypeText)

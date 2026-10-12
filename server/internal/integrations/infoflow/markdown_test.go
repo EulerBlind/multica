@@ -136,6 +136,163 @@ func TestGroupMarkdownIsChunkedAndOnlyFirstBatchHasAT(t *testing.T) {
 	}
 }
 
+// TestMarkdownPartialFailureResendsOnlyUnacked is the N54 lock-down: when the
+// FIRST markdown batch is accepted but the SECOND is rejected (40061), the TEXT
+// fallback must re-send ONLY the failed batch — the accepted batch is never
+// repeated. Request sequence: [MD(b1), MD(b2, rejected), TEXT(b2)].
+func TestMarkdownPartialFailureResendsOnlyUnacked(t *testing.T) {
+	oldDelay := infoflowDefaultChunkDelay
+	infoflowDefaultChunkDelay = 0
+	defer func() { infoflowDefaultChunkDelay = oldDelay }()
+
+	var seq []sentReq
+	// Two MD batches: accept the first, reject the second with 40061, then accept
+	// the TEXT retry.
+	mdAttempt := 0
+	srv := newJSONServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/auth/app_access_token":
+			_, _ = w.Write([]byte(`{"code":"ok","data":{"app_access_token":"at","expire":7200}}`))
+		case "/robot/msg/groupmsgsend":
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			msg := body["message"].(map[string]any)
+			h := msg["header"].(map[string]any)
+			s := sentReq{msgtype: h["msgtype"].(string)}
+			for _, e := range msg["body"].([]any) {
+				el := e.(map[string]any)
+				switch el["type"] {
+				case "AT":
+					s.at = true
+				case "MD", "TEXT":
+					s.text = el["content"].(string)
+				}
+			}
+			seq = append(seq, s)
+			if s.msgtype == "MD" {
+				mdAttempt++
+				if mdAttempt == 2 {
+					_, _ = w.Write([]byte(`{"code":"ok","data":{"errcode":40061,"errmsg":"message text length exceed limit"}}`))
+					return
+				}
+			}
+			_, _ = w.Write([]byte(`{"code":"ok","data":{"data":{"messageid":"m"}}}`))
+		}
+	})
+	s := &sender{client: NewClient(srv.Client(), srv.URL), appKey: "k", appSecret: "s", agentID: "8682"}
+	// Long markdown → exactly 2 batches, none containing a mid-string newline cut.
+	md := strings.Repeat("**加粗** 一段比较长的正文内容 line\n", 120)
+	ids, outcome, err := s.sendChunked(context.Background(),
+		infoflowSendTarget{ChatType: "group", ChatID: "12917205", MentionUserID: "alice"}, md)
+	if err != nil {
+		t.Fatalf("partial MD failure with a successful TEXT retry must not error, got %v", err)
+	}
+	// Request sequence: MD(b1 ok), MD(b2 rejected), TEXT(b2 retry). The first
+	// batch is sent exactly once (no repeat).
+	if len(seq) != 3 {
+		t.Fatalf("request sequence = %d entries, want 3: %+v", len(seq), seq)
+	}
+	if seq[0].msgtype != "MD" || !seq[0].at {
+		t.Fatalf("first request must be the AT-bearing MD batch, got %+v", seq[0])
+	}
+	if seq[1].msgtype != "MD" || seq[1].at {
+		t.Fatalf("second request must be the AT-free MD batch, got %+v", seq[1])
+	}
+	if seq[2].msgtype != "TEXT" || seq[2].at {
+		t.Fatalf("third request must be the AT-free TEXT retry of the failed batch, got %+v", seq[2])
+	}
+	// The first batch content appears exactly once across the whole sequence.
+	if n := countContent(seq, seq[0].text); n != 1 {
+		t.Fatalf("first batch content was sent %d times, want exactly 1 (no duplicate)", n)
+	}
+	// Delivered count = acked MD batch (1) + retry (1) = 2; ids reflect both.
+	if outcome.MsgType != msgTypeText || outcome.DeliveredBatches != 2 || len(ids) != 2 {
+		t.Fatalf("outcome=%+v ids=%v, want MsgType=TEXT DeliveredBatches=2 len(ids)=2", outcome, ids)
+	}
+	if ids[0] == "" {
+		t.Fatal("ids[0] must be the first actually delivered batch's id")
+	}
+}
+
+// TestMarkdownFirstBatchFailureResendsAllWithAT: when the FIRST batch fails, the
+// TEXT fallback re-sends the whole sequence and keeps the AT on its first item.
+// Sequence: [MD(b1, rejected), TEXT(b1+AT), TEXT(b2)].
+func TestMarkdownFirstBatchFailureResendsAllWithAT(t *testing.T) {
+	oldDelay := infoflowDefaultChunkDelay
+	infoflowDefaultChunkDelay = 0
+	defer func() { infoflowDefaultChunkDelay = oldDelay }()
+
+	var seq []sentReq
+	srv := newJSONServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/auth/app_access_token":
+			_, _ = w.Write([]byte(`{"code":"ok","data":{"app_access_token":"at","expire":7200}}`))
+		case "/robot/msg/groupmsgsend":
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			msg := body["message"].(map[string]any)
+			h := msg["header"].(map[string]any)
+			s := sentReq{msgtype: h["msgtype"].(string)}
+			for _, e := range msg["body"].([]any) {
+				if e.(map[string]any)["type"] == "AT" {
+					s.at = true
+				}
+			}
+			seq = append(seq, s)
+			if s.msgtype == "MD" {
+				// EVERY markdown attempt is rejected.
+				_, _ = w.Write([]byte(`{"code":"ok","data":{"errcode":40000,"errmsg":"msgtype not allowed"}}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"code":"ok","data":{"data":{"messageid":"m"}}}`))
+		}
+	})
+	s := &sender{client: NewClient(srv.Client(), srv.URL), appKey: "k", appSecret: "s", agentID: "8682"}
+	md := strings.Repeat("**加粗** 一段比较长的正文内容 line\n", 120) // 2 batches
+	ids, outcome, err := s.sendChunked(context.Background(),
+		infoflowSendTarget{ChatType: "group", ChatID: "12917205", MentionUserID: "alice"}, md)
+	if err != nil {
+		t.Fatalf("TEXT retry of all batches should succeed, got %v", err)
+	}
+	// MD(b1 rejected) then TEXT(b1 with AT), TEXT(b2 without AT).
+	if len(seq) != 3 {
+		t.Fatalf("sequence = %d, want 3: %+v", len(seq), seq)
+	}
+	if seq[0].msgtype != "MD" || !seq[0].at {
+		t.Fatalf("first request must be the AT-bearing MD batch, got %+v", seq[0])
+	}
+	if seq[1].msgtype != "TEXT" || !seq[1].at {
+		t.Fatalf("after the first batch fails, the TEXT fallback's FIRST item must keep the AT, got %+v", seq[1])
+	}
+	if seq[2].msgtype != "TEXT" || seq[2].at {
+		t.Fatalf("later TEXT batches must not carry the AT, got %+v", seq[2])
+	}
+	// Delivered count = the two TEXT retries (the MD attempts were rejected), and
+	// ids reflect those two.
+	if outcome.MsgType != msgTypeText || outcome.DeliveredBatches != 2 || len(ids) != 2 {
+		t.Fatalf("outcome=%+v ids=%v, want TEXT/2 batches", outcome, ids)
+	}
+}
+
+// sentReq records one outbound group request the fake gateway saw: the header
+// msgtype, whether it carried an AT, and its text-element content.
+type sentReq struct {
+	msgtype string
+	at      bool
+	text    string
+}
+
+// countContent counts how many recorded sequence entries carry the given content.
+func countContent(seq []sentReq, want string) int {
+	n := 0
+	for _, s := range seq {
+		if s.text == want {
+			n++
+		}
+	}
+	return n
+}
+
 // TestOutboundMarkdownFallbackForcesText: a markdown primary reply that is
 // rejected on BOTH MD and TEXT must still emit a TEXT fallback notice (never
 // markdown), and the failure must be logged with msgtype/batch fields.
