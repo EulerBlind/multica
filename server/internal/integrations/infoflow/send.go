@@ -105,11 +105,20 @@ func (s *sender) sendChunked(ctx context.Context, target infoflowSendTarget, tex
 	}
 	batches := splitTextChunks(body, infoflowMaxTextRunes)
 	ids := make([]string, 0, len(batches))
+	// Live group 12572761 (2026-10-14): msgtype=MD with an AT element is
+	// accepted (errcode 0) but does not highlight. TEXT with only an AT
+	// element is also accepted. Markdown replies therefore send the mention
+	// as its own TEXT message, then the MD batches with no AT.
+	preludeDelivered := false
+	if useMD && strings.TrimSpace(target.MentionUserID) != "" {
+		if id, err := s.sendMentionOnly(ctx, target); err == nil {
+			ids = append(ids, id)
+			preludeDelivered = true
+		}
+	}
 	for i, batch := range batches {
 		batchTarget := target
-		if i > 0 {
-			// Only the first batch @ mentions the asker. AT stays on that
-			// same message as the MD element (SDK sendToGroupWithOptions).
+		if useMD || preludeDelivered || i > 0 {
 			batchTarget.MentionUserID = ""
 		}
 		id, err := s.sendOnce(ctx, batchTarget, batch, msgType)
@@ -125,10 +134,7 @@ func (s *sender) sendChunked(ctx context.Context, target infoflowSendTarget, tex
 			// batch. The AT is re-attached only when the first batch itself failed
 			// (i == 0).
 			if msgType == msgTypeMD {
-				// The mention, when it landed, is the leading TEXT message.
-				// Re-attach it on the TEXT retry only if that prelude never
-				// went out (plain-text path, or the prelude itself failed).
-				retryIDs, retryErr := s.sendBatchesAsText(ctx, target, batches[i:], i == 0)
+				retryIDs, retryErr := s.sendBatchesAsText(ctx, target, batches[i:], i == 0 && !preludeDelivered)
 				delivered := append(append([]string(nil), ids...), retryIDs...)
 				outcome := infoflowSendOutcome{MsgType: msgTypeText, DeliveredBatches: len(delivered)}
 				if retryErr != nil {
@@ -189,12 +195,26 @@ func (s *sender) sendTextOnly(ctx context.Context, target infoflowSendTarget, te
 	return s.sendOnce(ctx, target, text, msgTypeText)
 }
 
+// sendMentionOnly posts a TEXT message whose body is a single AT element.
+// The live gateway accepts that shape (group 12572761, errcode 0).
+func (s *sender) sendMentionOnly(ctx context.Context, target infoflowSendTarget) (string, error) {
+	body, err := buildMentionOnlyBody(target, s.agentID)
+	if err != nil {
+		return "", err
+	}
+	return s.postPrepared(ctx, target, body)
+}
+
 // sendOnce posts exactly one message (no chunking) and returns its id.
 func (s *sender) sendOnce(ctx context.Context, target infoflowSendTarget, text string, msgType infoflowMsgType) (string, error) {
 	body, err := buildSendBody(target, s.agentID, text, msgType)
 	if err != nil {
 		return "", err
 	}
+	return s.postPrepared(ctx, target, body)
+}
+
+func (s *sender) postPrepared(ctx context.Context, target infoflowSendTarget, body map[string]any) (string, error) {
 	path := pathSendGroup
 	if target.ChatType == "p2p" {
 		path = pathSendSingle
@@ -305,16 +325,37 @@ func buildSendBody(target infoflowSendTarget, agentID, text string, msgType info
 	// binding never regresses into a broken send).
 	body := []map[string]any{}
 	if mention := strings.TrimSpace(target.MentionUserID); mention != "" {
-		// No member list is attached on the send path: atuserids is the
-		// inbound fromuserid. Live userInfoList has that same userId and no
-		// human imId (see atUserIDsForMention).
-		body = append(body, map[string]any{"type": "AT", "atall": false, "atuserids": atUserIDsForMention(mention, nil)})
+		body = append(body, atElement(mention))
 	}
 	// The element type follows the header msgtype: a body containing a markdown
 	// element requires msgtype=MD (the gateway rejects a mismatch).
 	body = append(body, map[string]any{"type": string(msgType), "content": text})
+	return groupEnvelope(agentIDNum, toID, msgType, body), nil
+}
+
+func buildMentionOnlyBody(target infoflowSendTarget, agentID string) (map[string]any, error) {
+	mention := strings.TrimSpace(target.MentionUserID)
+	if mention == "" {
+		return nil, errors.New("infoflow: mention prelude missing user id")
+	}
+	toID, err := strconv.ParseInt(target.ChatID, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("infoflow: group id %q is not numeric: %w", target.ChatID, err)
+	}
+	agentIDNum, err := strconv.ParseInt(agentID, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("infoflow: agent id %q is not numeric: %w", agentID, err)
+	}
+	return groupEnvelope(agentIDNum, toID, msgTypeText, []map[string]any{atElement(mention)}), nil
+}
+
+func atElement(mention string) map[string]any {
+	return map[string]any{"type": "AT", "atall": false, "atuserids": atUserIDsForMention(mention, nil)}
+}
+
+func groupEnvelope(agentID, toID int64, msgType infoflowMsgType, body []map[string]any) map[string]any {
 	return map[string]any{
-		"agentid": agentIDNum,
+		"agentid": agentID,
 		"message": map[string]any{
 			"header": map[string]any{
 				"toid":        toID,
@@ -325,7 +366,7 @@ func buildSendBody(target infoflowSendTarget, agentID, text string, msgType info
 			},
 			"body": body,
 		},
-	}, nil
+	}
 }
 
 func messageIDFromSendResponse(data map[string]any) string {
