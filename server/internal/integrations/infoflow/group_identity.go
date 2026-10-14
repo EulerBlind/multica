@@ -142,6 +142,38 @@ func (r *groupIdentityResolver) fetch(ctx context.Context, groupID string) []str
 	return tokens
 }
 
+// memberListUser is one human entry from userInfoList. The live gateway
+// (group 12572761 / 12563594, 2026-10-14) returns only userId, equal to the
+// inbound fromuserid. imId is decoded if a future payload adds it, but it is
+// not what AT uses.
+type memberListUser struct {
+	UserID any `json:"userId"`
+	ImID   any `json:"imId"`
+	Name   any `json:"name"`
+}
+
+// atUserIDsForMention picks atuserids for a human @.
+//
+// The value is the account id (fromuserid / userInfoList.userId). A missing
+// member list, a failed lookup, or a list that only carries robot imId all
+// keep that account id. imId is never substituted: on the live memberList it
+// exists only under agentInfoList.
+func atUserIDsForMention(fromUserID string, userInfoList []memberListUser) []string {
+	from := strings.TrimSpace(fromUserID)
+	if from == "" {
+		return nil
+	}
+	if len(userInfoList) == 0 {
+		return []string{from}
+	}
+	for _, user := range userInfoList {
+		if strings.TrimSpace(anyString(user.UserID)) == from {
+			return []string{from}
+		}
+	}
+	return []string{from}
+}
+
 // memberListAgent is one robot entry in a group member list. The gateway sends
 // agentId/imId as JSON numbers, so every field is decoded through anyString.
 type memberListAgent struct {

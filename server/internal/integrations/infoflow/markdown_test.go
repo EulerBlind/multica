@@ -116,31 +116,18 @@ func TestGroupMarkdownIsChunkedAndOnlyFirstBatchHasAT(t *testing.T) {
 	if outcome.MsgType != msgTypeMD {
 		t.Fatalf("outcome.MsgType = %q, want MD", outcome.MsgType)
 	}
-	if len(bodies) < 3 {
-		t.Fatalf("expected a TEXT mention plus multiple MD batches, got %d", len(bodies))
+	if len(bodies) < 2 {
+		t.Fatalf("expected multiple MD batches, got %d", len(bodies))
 	}
 	for i, b := range bodies {
 		h := b["message"].(map[string]any)["header"].(map[string]any)
-		wantType := "MD"
-		if i == 0 {
-			wantType = "TEXT"
-		}
-		if h["msgtype"] != wantType {
-			t.Fatalf("batch %d header msgtype = %v, want %s", i, h["msgtype"], wantType)
+		if h["msgtype"] != "MD" {
+			t.Fatalf("batch %d header msgtype = %v, want MD", i, h["msgtype"])
 		}
 		for _, e := range b["message"].(map[string]any)["body"].([]any) {
 			el := e.(map[string]any)
 			if el["type"] == "AT" && i != 0 {
-				t.Fatalf("batch %d carries an AT; the mention is only the leading TEXT message", i)
-			}
-			if i == 0 && el["type"] == "AT" {
-				ids, _ := el["atuserids"].([]any)
-				if len(ids) != 1 || ids[0] != "alice" {
-					t.Fatalf("mention atuserids = %v, want [alice] (fromuserid, not imId)", ids)
-				}
-			}
-			if el["type"] == "MD" && i == 0 {
-				t.Fatal("the mention message must not be an MD element")
+				t.Fatalf("batch %d carries an AT; only the first batch may", i)
 			}
 			if el["type"] == "MD" && i != 0 {
 				// sanity: later batches are still MD elements
@@ -202,28 +189,25 @@ func TestMarkdownPartialFailureResendsOnlyUnacked(t *testing.T) {
 	}
 	// Request sequence: MD(b1 ok), MD(b2 rejected), TEXT(b2 retry). The first
 	// batch is sent exactly once (no repeat).
-	if len(seq) != 4 {
-		t.Fatalf("request sequence = %d entries, want 4: %+v", len(seq), seq)
+	if len(seq) != 3 {
+		t.Fatalf("request sequence = %d entries, want 3: %+v", len(seq), seq)
 	}
-	if seq[0].msgtype != "TEXT" || !seq[0].at {
-		t.Fatalf("first request must be the TEXT mention, got %+v", seq[0])
+	if seq[0].msgtype != "MD" || !seq[0].at {
+		t.Fatalf("first request must be the AT-bearing MD batch, got %+v", seq[0])
 	}
 	if seq[1].msgtype != "MD" || seq[1].at {
 		t.Fatalf("second request must be the AT-free MD batch, got %+v", seq[1])
 	}
-	if seq[2].msgtype != "MD" || seq[2].at {
-		t.Fatalf("third request must be the AT-free MD batch, got %+v", seq[2])
+	if seq[2].msgtype != "TEXT" || seq[2].at {
+		t.Fatalf("third request must be the AT-free TEXT retry of the failed batch, got %+v", seq[2])
 	}
-	if seq[3].msgtype != "TEXT" || seq[3].at {
-		t.Fatalf("fourth request must be the AT-free TEXT retry of the failed batch, got %+v", seq[3])
-	}
-	// The first content batch appears exactly once across the whole sequence.
-	if n := countContent(seq, seq[1].text); n != 1 {
+	// The first batch content appears exactly once across the whole sequence.
+	if n := countContent(seq, seq[0].text); n != 1 {
 		t.Fatalf("first batch content was sent %d times, want exactly 1 (no duplicate)", n)
 	}
-	// Delivered = mention + acked MD batch + retry.
-	if outcome.MsgType != msgTypeText || outcome.DeliveredBatches != 3 || len(ids) != 3 {
-		t.Fatalf("outcome=%+v ids=%v, want MsgType=TEXT DeliveredBatches=3 len(ids)=3", outcome, ids)
+	// Delivered count = acked MD batch (1) + retry (1) = 2; ids reflect both.
+	if outcome.MsgType != msgTypeText || outcome.DeliveredBatches != 2 || len(ids) != 2 {
+		t.Fatalf("outcome=%+v ids=%v, want MsgType=TEXT DeliveredBatches=2 len(ids)=2", outcome, ids)
 	}
 	if ids[0] == "" {
 		t.Fatal("ids[0] must be the first actually delivered batch's id")
@@ -270,23 +254,23 @@ func TestMarkdownFirstBatchFailureResendsAllWithAT(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TEXT retry of all batches should succeed, got %v", err)
 	}
-	// TEXT mention, then MD(b1 rejected), then TEXT content retries without a
-	// second AT (the mention already landed).
-	if len(seq) != 4 {
-		t.Fatalf("sequence = %d, want 4: %+v", len(seq), seq)
+	// MD(b1 rejected) then TEXT(b1 with AT), TEXT(b2 without AT).
+	if len(seq) != 3 {
+		t.Fatalf("sequence = %d, want 3: %+v", len(seq), seq)
 	}
-	if seq[0].msgtype != "TEXT" || !seq[0].at {
-		t.Fatalf("first request must be the TEXT mention, got %+v", seq[0])
+	if seq[0].msgtype != "MD" || !seq[0].at {
+		t.Fatalf("first request must be the AT-bearing MD batch, got %+v", seq[0])
 	}
-	if seq[1].msgtype != "MD" || seq[1].at {
-		t.Fatalf("markdown batch must not carry AT, got %+v", seq[1])
+	if seq[1].msgtype != "TEXT" || !seq[1].at {
+		t.Fatalf("after the first batch fails, the TEXT fallback's FIRST item must keep the AT, got %+v", seq[1])
 	}
-	if seq[2].msgtype != "TEXT" || seq[2].at || seq[3].msgtype != "TEXT" || seq[3].at {
-		t.Fatalf("TEXT retries must not repeat the AT, got %+v %+v", seq[2], seq[3])
+	if seq[2].msgtype != "TEXT" || seq[2].at {
+		t.Fatalf("later TEXT batches must not carry the AT, got %+v", seq[2])
 	}
-	// Delivered = mention + two TEXT retries (the MD attempt was rejected).
-	if outcome.MsgType != msgTypeText || outcome.DeliveredBatches != 3 || len(ids) != 3 {
-		t.Fatalf("outcome=%+v ids=%v, want TEXT/3 delivered", outcome, ids)
+	// Delivered count = the two TEXT retries (the MD attempts were rejected), and
+	// ids reflect those two.
+	if outcome.MsgType != msgTypeText || outcome.DeliveredBatches != 2 || len(ids) != 2 {
+		t.Fatalf("outcome=%+v ids=%v, want TEXT/2 batches", outcome, ids)
 	}
 }
 
@@ -328,18 +312,16 @@ func TestOutboundMarkdownFallbackForcesText(t *testing.T) {
 			_ = json.NewDecoder(r.Body).Decode(&body)
 			h := body["message"].(map[string]any)["header"].(map[string]any)
 			types = append(types, h["msgtype"].(string))
-			// Reject the mention prelude, the MD body, and the TEXT retry.
-			// Only the short notice (no markdown, no AT) succeeds.
-			content := ""
+			// Reject everything that carries the body: both the MD attempt and
+			// the TEXT retry fail; only the short notice (no markdown, no AT)
+			// succeeds.
+			hasAT := false
 			for _, e := range body["message"].(map[string]any)["body"].([]any) {
-				el := e.(map[string]any)
-				if el["type"] == "MD" || el["type"] == "TEXT" {
-					if s, ok := el["content"].(string); ok {
-						content += s
-					}
+				if e.(map[string]any)["type"] == "AT" {
+					hasAT = true
 				}
 			}
-			if h["msgtype"] == "MD" || strings.Contains(content, "加粗") {
+			if hasAT {
 				_, _ = w.Write([]byte(`{"code":"ok","data":{"errcode":40061,"errmsg":"message text length exceed limit"}}`))
 				return
 			}
@@ -362,12 +344,12 @@ func TestOutboundMarkdownFallbackForcesText(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected the delivery to be reported as failed")
 	}
-	// Mention TEXT (rejected because it is not the notice), MD, TEXT retry, notice.
-	if len(types) != 4 {
-		t.Fatalf("expected mention + MD + TEXT retry + TEXT notice, got %v", types)
+	// First: MD attempt. Second: TEXT retry of the same body. Third: TEXT notice.
+	if len(types) != 3 {
+		t.Fatalf("expected MD + TEXT retry + TEXT notice, got %v", types)
 	}
-	if types[0] != "TEXT" || types[1] != "MD" || types[2] != "TEXT" || types[3] != "TEXT" {
-		t.Fatalf("msgtype sequence = %v, want [TEXT MD TEXT TEXT]", types)
+	if types[0] != "MD" || types[1] != "TEXT" || types[2] != "TEXT" {
+		t.Fatalf("msgtype sequence = %v, want [MD TEXT TEXT]", types)
 	}
 }
 
@@ -405,16 +387,13 @@ func TestMarkdownSendFailureFallsBackToText(t *testing.T) {
 	if outcome.MsgType != msgTypeText {
 		t.Fatalf("outcome.MsgType = %q, want TEXT after fallback", outcome.MsgType)
 	}
-	if len(bodies) != 3 {
-		t.Fatalf("expected TEXT mention + MD attempt + TEXT retry, got %d sends", len(bodies))
+	if len(bodies) != 2 {
+		t.Fatalf("expected MD attempt + TEXT retry, got %d sends", len(bodies))
 	}
-	if !strings.Contains(bodies[0], `"msgtype":"TEXT"`) || !strings.Contains(bodies[0], `"AT"`) {
-		t.Fatalf("first send should be the TEXT mention: %s", bodies[0])
+	if !strings.Contains(bodies[0], `"msgtype":"MD"`) {
+		t.Fatalf("first send should be MD: %s", bodies[0])
 	}
-	if !strings.Contains(bodies[1], `"msgtype":"MD"`) || strings.Contains(bodies[1], `"AT"`) {
-		t.Fatalf("second send should be MD without AT: %s", bodies[1])
-	}
-	if !strings.Contains(bodies[2], `"msgtype":"TEXT"`) || !strings.Contains(bodies[2], "加粗") {
-		t.Fatalf("third send must be the same content as TEXT: %s", bodies[2])
+	if !strings.Contains(bodies[1], `"msgtype":"TEXT"`) || !strings.Contains(bodies[1], "加粗") {
+		t.Fatalf("second send must be the same content as TEXT: %s", bodies[1])
 	}
 }

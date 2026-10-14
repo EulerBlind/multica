@@ -2,6 +2,7 @@ package infoflow
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -124,6 +125,37 @@ func TestGroupIdentityResolverAcceptsBothEnvelopeShapes(t *testing.T) {
 				t.Fatalf("tokens = %v, want [4100104388 Multica]", tokens)
 			}
 		})
+	}
+}
+
+// TestATUserIDKeepsAccountIDWhenMemberListHasNoHumanImID locks the live
+// memberList shape: humans have userId only; imId belongs to robots; a
+// missing list still uses fromuserid.
+func TestATUserIDKeepsAccountIDWhenMemberListHasNoHumanImID(t *testing.T) {
+	const live = `{"data":{"data":{"userInfoList":[{"userId":"wangjianghua"},{"userId":"v_liuchunqi01"}],"agentInfoList":[{"agentId":8682,"name":"Multica","imId":4100104388}]}}}`
+	var parsed struct {
+		Data struct {
+			Data struct {
+				UserInfoList []memberListUser `json:"userInfoList"`
+			} `json:"data"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(live), &parsed); err != nil {
+		t.Fatal(err)
+	}
+	users := parsed.Data.Data.UserInfoList
+	if got := atUserIDsForMention("wangjianghua", users); len(got) != 1 || got[0] != "wangjianghua" {
+		t.Fatalf("matched user = %v, want [wangjianghua] not the robot imId", got)
+	}
+	if got := atUserIDsForMention("wangjianghua", nil); len(got) != 1 || got[0] != "wangjianghua" {
+		t.Fatalf("missing member list = %v, want fromuserid", got)
+	}
+	withImID := []memberListUser{{UserID: "wangjianghua", ImID: "4100999999"}}
+	if got := atUserIDsForMention("wangjianghua", withImID); len(got) != 1 || got[0] != "wangjianghua" {
+		t.Fatalf("imId on a user must not replace userId, got %v", got)
+	}
+	if got := atUserIDsForMention("nobody", nil); len(got) != 1 || got[0] != "nobody" {
+		t.Fatalf("unknown user with no list = %v", got)
 	}
 }
 
