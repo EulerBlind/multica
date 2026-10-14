@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -165,25 +166,8 @@ func TestSessionRoutingIsolatesGroupPerSender(t *testing.T) {
 	if groupCfg.SenderID != "u1" || groupCfg.MentionUserID != "u1" {
 		t.Fatalf("group routing config must carry the sender as identity + AT target, got %+v", groupCfg)
 	}
-	named := infoflowMessage(channel.ChatTypeGroup, "12572761", "u1")
-	named.Source.SenderStableID = "v_刘春琦"
-	_, namedCfg := infoflowSessionRouting(named)
-	var namedParsed infoflowBindingConfig
-	if err := json.Unmarshal(namedCfg, &namedParsed); err != nil {
-		t.Fatal(err)
-	}
-	if namedParsed.MentionUserName != "v_刘春琦" {
-		t.Fatalf("mention_user_name = %q, want the inbound display name", namedParsed.MentionUserName)
-	}
-	namedTarget := outboundTarget(db.ChannelChatSessionBinding{ChatType: "group", ChannelChatID: "12572761:u1", Config: namedCfg})
-	if namedTarget.MentionUserName != "v_刘春琦" || mentionDisplayName(namedTarget.MentionUserName, nil, namedTarget.MentionUserID) != "v_刘春琦" {
-		t.Fatalf("outbound display name = %+v", namedTarget)
-	}
-	if got := mentionDisplayName("", []memberListUser{{UserID: "u1", Name: "群成员"}}, "u1"); got != "群成员" {
-		t.Fatalf("member-list name = %q", got)
-	}
-	if got := mentionDisplayName("", nil, "u1"); got != "u1" {
-		t.Fatalf("account-id fallback = %q", got)
+	if strings.Contains(string(groupCfgRaw), "mention_user_name") {
+		t.Fatalf("group routing must not persist a text display name: %s", groupCfgRaw)
 	}
 }
 

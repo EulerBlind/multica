@@ -37,9 +37,6 @@ type infoflowSendTarget struct {
 	// MentionUserID is the InfoFlow user id to @ mention ahead of a group reply
 	// (the person who asked). Empty means a plain group message with no AT.
 	MentionUserID string
-	// MentionUserName is the display name of that same person (inbound
-	// fromusername, else a group-member name). Empty falls back to the account id.
-	MentionUserName string
 }
 
 // sender posts replies for one installation.
@@ -106,12 +103,9 @@ func (s *sender) sendChunked(ctx context.Context, target infoflowSendTarget, tex
 	if useMD {
 		msgType = msgTypeMD
 	}
-	// The visible @ sits on the first line of the same message as the body
-	// (`@显示名` + newline + body). It is applied before chunking so only the
-	// first batch carries it. The AT element stays on that same first batch.
-	if target.ChatType == "group" {
-		body = prefixMentionLine(body, mentionDisplayName(target.MentionUserName, nil, target.MentionUserID))
-	}
+	// The AT element is the only @. Do not also write "@name" into the body:
+	// the client renders the AT as the display name, and a text prefix of the
+	// account id shows up beside it.
 	batches := splitTextChunks(body, infoflowMaxTextRunes)
 	ids := make([]string, 0, len(batches))
 	for i, batch := range batches {
@@ -130,7 +124,7 @@ func (s *sender) sendChunked(ctx context.Context, target infoflowSendTarget, tex
 			// FAILED batch (batches[i:]) and never re-sends an accepted one — the
 			// N53 defect was re-sending from index 0 and duplicating the first
 			// batch. The AT is re-attached only when the first batch itself failed
-			// (i == 0); that batch's text already contains the @ line.
+			// (i == 0).
 			if msgType == msgTypeMD {
 				retryIDs, retryErr := s.sendBatchesAsText(ctx, target, batches[i:], i == 0)
 				delivered := append(append([]string(nil), ids...), retryIDs...)
@@ -319,34 +313,6 @@ func buildSendBody(target infoflowSendTarget, agentID, text string, msgType info
 	// element requires msgtype=MD (the gateway rejects a mismatch).
 	body = append(body, map[string]any{"type": string(msgType), "content": text})
 	return groupEnvelope(agentIDNum, toID, msgType, body), nil
-}
-
-// mentionDisplayName is the visible label for the same person as atuserids.
-// Order: inbound display name, then a group-member name, then the account id.
-func mentionDisplayName(explicit string, users []memberListUser, id string) string {
-	if name := strings.TrimPrefix(strings.TrimSpace(explicit), "@"); name != "" {
-		return name
-	}
-	id = strings.TrimSpace(id)
-	for _, user := range users {
-		if strings.TrimSpace(anyString(user.UserID)) != id {
-			continue
-		}
-		if name := strings.TrimPrefix(strings.TrimSpace(anyString(user.Name)), "@"); name != "" {
-			return name
-		}
-	}
-	return id
-}
-
-// prefixMentionLine puts `@name` on its own line ahead of the body so the
-// mention and the message are one send. An empty name leaves the body unchanged.
-func prefixMentionLine(body, name string) string {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return body
-	}
-	return "@" + name + "\n" + body
 }
 
 func atElement(mention string) map[string]any {

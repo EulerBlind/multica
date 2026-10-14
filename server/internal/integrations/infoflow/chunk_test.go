@@ -96,11 +96,8 @@ func TestSendChunkedSplitsOrdersAndMentionsOnce(t *testing.T) {
 				}
 			case "TEXT":
 				content := el["content"].(string)
-				if i == 0 {
-					if !strings.HasPrefix(content, "@alice\n") {
-						t.Fatalf("first batch content = %q, want the @ line on the same message", content)
-					}
-					content = strings.TrimPrefix(content, "@alice\n")
+				if i == 0 && strings.Contains(content, "@") {
+					t.Fatalf("first batch content repeats the AT as text: %q", content)
 				}
 				rebuilt.WriteString(content)
 			}
