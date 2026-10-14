@@ -37,6 +37,9 @@ type infoflowSendTarget struct {
 	// MentionUserID is the InfoFlow user id to @ mention ahead of a group reply
 	// (the person who asked). Empty means a plain group message with no AT.
 	MentionUserID string
+	// MentionUserName is the display name of that same person (inbound
+	// fromusername, else a group-member name). Empty falls back to the account id.
+	MentionUserName string
 }
 
 // sender posts replies for one installation.
@@ -103,22 +106,17 @@ func (s *sender) sendChunked(ctx context.Context, target infoflowSendTarget, tex
 	if useMD {
 		msgType = msgTypeMD
 	}
+	// The visible @ sits on the first line of the same message as the body
+	// (`@显示名` + newline + body). It is applied before chunking so only the
+	// first batch carries it. The AT element stays on that same first batch.
+	if target.ChatType == "group" {
+		body = prefixMentionLine(body, mentionDisplayName(target.MentionUserName, nil, target.MentionUserID))
+	}
 	batches := splitTextChunks(body, infoflowMaxTextRunes)
 	ids := make([]string, 0, len(batches))
-	// Live group 12572761 (2026-10-14): msgtype=MD with an AT element is
-	// accepted (errcode 0) but does not highlight. TEXT with only an AT
-	// element is also accepted. Markdown replies therefore send the mention
-	// as its own TEXT message, then the MD batches with no AT.
-	preludeDelivered := false
-	if useMD && strings.TrimSpace(target.MentionUserID) != "" {
-		if id, err := s.sendMentionOnly(ctx, target); err == nil {
-			ids = append(ids, id)
-			preludeDelivered = true
-		}
-	}
 	for i, batch := range batches {
 		batchTarget := target
-		if useMD || preludeDelivered || i > 0 {
+		if i > 0 {
 			batchTarget.MentionUserID = ""
 		}
 		id, err := s.sendOnce(ctx, batchTarget, batch, msgType)
@@ -132,9 +130,9 @@ func (s *sender) sendChunked(ctx context.Context, target infoflowSendTarget, tex
 			// FAILED batch (batches[i:]) and never re-sends an accepted one — the
 			// N53 defect was re-sending from index 0 and duplicating the first
 			// batch. The AT is re-attached only when the first batch itself failed
-			// (i == 0).
+			// (i == 0); that batch's text already contains the @ line.
 			if msgType == msgTypeMD {
-				retryIDs, retryErr := s.sendBatchesAsText(ctx, target, batches[i:], i == 0 && !preludeDelivered)
+				retryIDs, retryErr := s.sendBatchesAsText(ctx, target, batches[i:], i == 0)
 				delivered := append(append([]string(nil), ids...), retryIDs...)
 				outcome := infoflowSendOutcome{MsgType: msgTypeText, DeliveredBatches: len(delivered)}
 				if retryErr != nil {
@@ -193,16 +191,6 @@ func (s *sender) sendTextOnly(ctx context.Context, target infoflowSendTarget, te
 		return "", nil
 	}
 	return s.sendOnce(ctx, target, text, msgTypeText)
-}
-
-// sendMentionOnly posts a TEXT message whose body is a single AT element.
-// The live gateway accepts that shape (group 12572761, errcode 0).
-func (s *sender) sendMentionOnly(ctx context.Context, target infoflowSendTarget) (string, error) {
-	body, err := buildMentionOnlyBody(target, s.agentID)
-	if err != nil {
-		return "", err
-	}
-	return s.postPrepared(ctx, target, body)
 }
 
 // sendOnce posts exactly one message (no chunking) and returns its id.
@@ -333,20 +321,32 @@ func buildSendBody(target infoflowSendTarget, agentID, text string, msgType info
 	return groupEnvelope(agentIDNum, toID, msgType, body), nil
 }
 
-func buildMentionOnlyBody(target infoflowSendTarget, agentID string) (map[string]any, error) {
-	mention := strings.TrimSpace(target.MentionUserID)
-	if mention == "" {
-		return nil, errors.New("infoflow: mention prelude missing user id")
+// mentionDisplayName is the visible label for the same person as atuserids.
+// Order: inbound display name, then a group-member name, then the account id.
+func mentionDisplayName(explicit string, users []memberListUser, id string) string {
+	if name := strings.TrimPrefix(strings.TrimSpace(explicit), "@"); name != "" {
+		return name
 	}
-	toID, err := strconv.ParseInt(target.ChatID, 10, 64)
-	if err != nil {
-		return nil, fmt.Errorf("infoflow: group id %q is not numeric: %w", target.ChatID, err)
+	id = strings.TrimSpace(id)
+	for _, user := range users {
+		if strings.TrimSpace(anyString(user.UserID)) != id {
+			continue
+		}
+		if name := strings.TrimPrefix(strings.TrimSpace(anyString(user.Name)), "@"); name != "" {
+			return name
+		}
 	}
-	agentIDNum, err := strconv.ParseInt(agentID, 10, 64)
-	if err != nil {
-		return nil, fmt.Errorf("infoflow: agent id %q is not numeric: %w", agentID, err)
+	return id
+}
+
+// prefixMentionLine puts `@name` on its own line ahead of the body so the
+// mention and the message are one send. An empty name leaves the body unchanged.
+func prefixMentionLine(body, name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return body
 	}
-	return groupEnvelope(agentIDNum, toID, msgTypeText, []map[string]any{atElement(mention)}), nil
+	return "@" + name + "\n" + body
 }
 
 func atElement(mention string) map[string]any {

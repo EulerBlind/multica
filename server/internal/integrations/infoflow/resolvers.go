@@ -72,10 +72,11 @@ const groupRoutingSeparator = ":"
 //   - MentionUserID is the group AT target; kept separate from SenderID so the
 //     1:1 semantics stay intact.
 type infoflowBindingConfig struct {
-	ChatType      string `json:"chat_type"`
-	ChatID        string `json:"chat_id"`
-	SenderID      string `json:"sender_id,omitempty"`
-	MentionUserID string `json:"mention_user_id,omitempty"`
+	ChatType        string `json:"chat_type"`
+	ChatID          string `json:"chat_id"`
+	SenderID        string `json:"sender_id,omitempty"`
+	MentionUserID   string `json:"mention_user_id,omitempty"`
+	MentionUserName string `json:"mention_user_name,omitempty"`
 }
 
 func infoflowSessionRouting(msg channel.InboundMessage) (bindingKey string, config []byte) {
@@ -89,6 +90,7 @@ func infoflowSessionRouting(msg channel.InboundMessage) (bindingKey string, conf
 		// stays the identity/binding key; the AT target rides along separately.
 		cfg.SenderID = msg.Source.SenderID
 		cfg.MentionUserID = msg.Source.SenderID
+		cfg.MentionUserName = strings.TrimSpace(msg.Source.SenderStableID)
 		if sender := strings.TrimSpace(msg.Source.SenderID); sender != "" {
 			chatID = chatID + groupRoutingSeparator + sender
 		}
@@ -110,6 +112,7 @@ func outboundTarget(b db.ChannelChatSessionBinding) infoflowSendTarget {
 			}
 			target.SenderID = cfg.SenderID
 			target.MentionUserID = cfg.MentionUserID
+			target.MentionUserName = cfg.MentionUserName
 		}
 	}
 	// Compatibility: a legacy group binding stored the plain group id as its

@@ -254,6 +254,7 @@ func targetFromMessage(msg channel.InboundMessage) infoflowSendTarget {
 	if target.MentionUserID == "" {
 		target.MentionUserID = sender
 	}
+	target.MentionUserName = strings.TrimSpace(msg.Source.SenderStableID)
 	return target
 }
 
