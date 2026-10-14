@@ -704,7 +704,9 @@ func (r *Router) processClaimed(ctx context.Context, set ResolverSet, msg channe
 		if !startChat && !appendRes.BecameVisible {
 			r.lifecycle.ChannelChatTitleInitialized(inst.WorkspaceID, sessionCreator, sessionID, appendRes.InitialTitle)
 		}
-		r.lifecycle.GenerateChannelChatTitle(inst.WorkspaceID, sessionCreator, sessionID, appendRes.InitialTitle, chatTitleSource(msg.Text, msg.CommandText, !startChat && msg.ForceFresh))
+		if shouldGenerateChannelTitle(appendRes.InitialTitle, appendRes.TitleStable) {
+			r.lifecycle.GenerateChannelChatTitle(inst.WorkspaceID, sessionCreator, sessionID, appendRes.InitialTitle, chatTitleSource(msg.Text, msg.CommandText, !startChat && msg.ForceFresh))
+		}
 	}
 	return res, postAppendFinalize, nil
 }

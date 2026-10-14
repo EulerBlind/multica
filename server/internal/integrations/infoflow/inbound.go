@@ -20,11 +20,12 @@ type infoflowRaw struct {
 	PicURL       string `json:"PicUrl"`
 	Message      *struct {
 		Header struct {
-			FromUserID string `json:"fromuserid"`
-			ToID       any    `json:"toid"`
-			ToType     string `json:"totype"`
-			MsgType    string `json:"msgtype"`
-			MessageID  any    `json:"messageid"`
+			FromUserID   string `json:"fromuserid"`
+			FromUserName string `json:"fromusername"`
+			ToID         any    `json:"toid"`
+			ToType       string `json:"totype"`
+			MsgType      string `json:"msgtype"`
+			MessageID    any    `json:"messageid"`
 		} `json:"header"`
 		Body  []map[string]any `json:"body"`
 		Reply *infoflowQuote   `json:"reply"`
@@ -117,7 +118,7 @@ func normalizePrivatePayload(payload infoflowRaw) (channel.InboundMessage, bool)
 	return channel.InboundMessage{
 		EventID:        msgID,
 		MessageID:      msgID,
-		Source:         channel.Source{ChannelType: TypeInfoFlow, ChatID: senderID, ChatType: channel.ChatTypeP2P, SenderID: senderID},
+		Source:         channel.Source{ChannelType: TypeInfoFlow, ChatID: senderID, ChatType: channel.ChatTypeP2P, SenderID: senderID, SenderStableID: strings.TrimSpace(payload.FromUserName)},
 		Type:           msgTypeFromPrivate(payload),
 		Text:           text,
 		CommandText:    text,
@@ -179,7 +180,7 @@ func normalizeGroupPayloadReasonWithIdentity(payload infoflowRaw, self identityS
 	msg := channel.InboundMessage{
 		EventID:            msgID,
 		MessageID:          msgID,
-		Source:             channel.Source{ChannelType: TypeInfoFlow, ChatID: groupID, ChatType: channel.ChatTypeGroup, SenderID: senderID},
+		Source:             channel.Source{ChannelType: TypeInfoFlow, ChatID: groupID, ChatType: channel.ChatTypeGroup, SenderID: senderID, SenderStableID: strings.TrimSpace(h.FromUserName)},
 		Type:               msgTypeFromHeader(h.MsgType),
 		Text:               text,
 		CommandText:        command,
@@ -429,11 +430,12 @@ func containsAT(body []map[string]any) bool {
 // The sender's own body is not included; callers prepend this as context.
 func flattenQuoted(message *struct {
 	Header struct {
-		FromUserID string `json:"fromuserid"`
-		ToID       any    `json:"toid"`
-		ToType     string `json:"totype"`
-		MsgType    string `json:"msgtype"`
-		MessageID  any    `json:"messageid"`
+		FromUserID   string `json:"fromuserid"`
+		FromUserName string `json:"fromusername"`
+		ToID         any    `json:"toid"`
+		ToType       string `json:"totype"`
+		MsgType      string `json:"msgtype"`
+		MessageID    any    `json:"messageid"`
 	} `json:"header"`
 	Body  []map[string]any `json:"body"`
 	Reply *infoflowQuote   `json:"reply"`
@@ -479,11 +481,12 @@ func bodyItems(v any) []map[string]any {
 
 func groupReplyTo(message *struct {
 	Header struct {
-		FromUserID string `json:"fromuserid"`
-		ToID       any    `json:"toid"`
-		ToType     string `json:"totype"`
-		MsgType    string `json:"msgtype"`
-		MessageID  any    `json:"messageid"`
+		FromUserID   string `json:"fromuserid"`
+		FromUserName string `json:"fromusername"`
+		ToID         any    `json:"toid"`
+		ToType       string `json:"totype"`
+		MsgType      string `json:"msgtype"`
+		MessageID    any    `json:"messageid"`
 	} `json:"header"`
 	Body  []map[string]any `json:"body"`
 	Reply *infoflowQuote   `json:"reply"`

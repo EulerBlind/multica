@@ -169,6 +169,9 @@ type AppendResult struct {
 	// process crash without borrowing the sender of a later generation.
 	PendingContexts []PendingContext
 	InitialTitle    string
+	// TitleStable means InitialTitle came from the adapter hook and must not
+	// be replaced by the shared LLM title pass. Zero value keeps that pass.
+	TitleStable bool
 	// BecameVisible is true only when this committed ordinary turn changed an
 	// implicit channel session from hidden orchestration state into a public Chat.
 	BecameVisible bool

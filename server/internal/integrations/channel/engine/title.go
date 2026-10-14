@@ -36,6 +36,22 @@ func deriveFirstMessageTitle(body string, hasMedia bool) string {
 	return DeriveChatTitle(body)
 }
 
+// chooseSessionTitle applies an optional adapter title. An empty stable title
+// keeps the shared first-message derivation, which is the default for every
+// adapter that does not set one.
+func chooseSessionTitle(stable, body, commandText string, consumedFresh, hasMedia bool) (string, bool) {
+	if title := strings.TrimSpace(stable); title != "" {
+		return title, true
+	}
+	return deriveFirstMessageTitle(chatTitleSource(body, commandText, consumedFresh), hasMedia), false
+}
+
+// shouldGenerateChannelTitle reports whether the shared LLM title pass may
+// replace the title just written. A stable adapter title suppresses it.
+func shouldGenerateChannelTitle(initialTitle string, stable bool) bool {
+	return strings.TrimSpace(initialTitle) != "" && !stable
+}
+
 func withoutMediaPlaceholderLines(body string) string {
 	lines := make([]string, 0, strings.Count(body, "\n")+1)
 	for _, line := range strings.Split(body, "\n") {

@@ -400,6 +400,10 @@ type AppendInput struct {
 	ClaimToken          pgtype.UUID
 	MediaPendingSeconds float64
 	ForceFresh          bool
+	// StableTitle, when set, is written instead of the first-message summary
+	// and is not replaced by the shared LLM title pass. Empty keeps the
+	// default path.
+	StableTitle string
 	// BeforeCommit adds work that must be atomic with this message and its
 	// context-generation change. Native slash commands use it to snapshot and
 	// enqueue the task before the message becomes visible.
@@ -422,9 +426,11 @@ type StartSessionInput struct {
 	DedupMessageID string
 	ThreadID       string
 	// SenderChannelID mirrors AppendInput.SenderChannelID.
-	SenderChannelID        string
-	ClaimToken             pgtype.UUID
-	MediaPendingSeconds    float64
+	SenderChannelID     string
+	ClaimToken          pgtype.UUID
+	MediaPendingSeconds float64
+	// StableTitle mirrors AppendInput.StableTitle for a /new session.
+	StableTitle            string
 	PersistMessage         bool
 	HistoryBoundaryPending bool
 	BeforeWrite            func(context.Context, pgx.Tx) error
@@ -493,8 +499,11 @@ func (s *ChatSession) StartSession(ctx context.Context, in StartSessionInput) (S
 	}
 
 	title := ""
+	titleStable := false
 	if in.PersistMessage {
-		title = deriveFirstMessageTitle(chatTitleSource(in.Body, in.CommandText, false), in.MediaPendingSeconds > 0)
+		title, titleStable = chooseSessionTitle(in.StableTitle, in.Body, in.CommandText, false, in.MediaPendingSeconds > 0)
+	} else if strings.TrimSpace(in.StableTitle) != "" {
+		title, titleStable = strings.TrimSpace(in.StableTitle), true
 	}
 	session, err := qtx.CreateChatSession(ctx, db.CreateChatSessionParams{
 		ID: dbid.NewV7(), WorkspaceID: in.WorkspaceID, AgentID: in.AgentID,
@@ -526,6 +535,7 @@ func (s *ChatSession) StartSession(ctx context.Context, in StartSessionInput) (S
 	}
 	result := StartSessionResult{SessionID: session.ID, BindingID: binding.ID, RouteRevision: binding.RouteRevision}
 	result.Append.InitialTitle = title
+	result.Append.TitleStable = titleStable
 	result.Append.BindingID = binding.ID
 	result.Append.RouteRevision = binding.RouteRevision
 	result.Append.ContextRevision = 1
@@ -681,13 +691,19 @@ func (s *ChatSession) AppendUserMessage(ctx context.Context, in AppendInput) (Ap
 	}
 	becameVisible := cmd == nil && !hadPublicUserMessage && !currentSession.ExplicitlyCreatedAt.Valid
 	initializedTitle := ""
+	titleStable := false
 	if cmd == nil {
-		title := deriveFirstMessageTitle(chatTitleSource(in.Body, in.CommandText, in.ForceFresh), in.MediaPendingSeconds > 0)
+		var title string
+		title, titleStable = chooseSessionTitle(in.StableTitle, in.Body, in.CommandText, in.ForceFresh, in.MediaPendingSeconds > 0)
 		if becameVisible {
-			if _, err := qtx.ReplaceImplicitChatSessionTitle(ctx, db.ReplaceImplicitChatSessionTitleParams{ID: in.SessionID, Title: title}); err != nil {
+			renamed := titleStable && strings.TrimSpace(currentSession.Title) != "" && strings.TrimSpace(currentSession.Title) != title
+			if renamed {
+				// A member already named this chat. Keep that title.
+			} else if _, err := qtx.ReplaceImplicitChatSessionTitle(ctx, db.ReplaceImplicitChatSessionTitleParams{ID: in.SessionID, Title: title}); err != nil {
 				return AppendResult{}, fmt.Errorf("replace implicit chat title: %w", err)
+			} else {
+				initializedTitle = title
 			}
-			initializedTitle = title
 		} else if title != "" {
 			if _, err := qtx.InitializeChatSessionTitle(ctx, db.InitializeChatSessionTitleParams{ID: in.SessionID, Title: title}); err == nil {
 				initializedTitle = title
@@ -818,6 +834,7 @@ func (s *ChatSession) AppendUserMessage(ctx context.Context, in AppendInput) (Ap
 		ContextRevision: contextRevision,
 		PendingContexts: pendingContexts,
 		InitialTitle:    initializedTitle,
+		TitleStable:     titleStable && initializedTitle != "",
 		BecameVisible:   becameVisible,
 		BindingID:       binding.ID,
 		RouteRevision:   binding.RouteRevision,

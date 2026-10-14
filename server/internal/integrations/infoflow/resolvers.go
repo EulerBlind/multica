@@ -427,6 +427,7 @@ func (r *sessionBinder) StartSession(ctx context.Context, p engine.StartSessionP
 		ThreadID:               p.Message.Source.ThreadID,
 		ClaimToken:             p.ClaimToken,
 		MediaPendingSeconds:    p.MediaPendingSeconds,
+		StableTitle:            infoflowChatTitle(p.Message),
 		PersistMessage:         p.PersistMessage,
 		HistoryBoundaryPending: p.HistoryBoundaryPending,
 		BeforeCommit:           p.BeforeCommit,
@@ -462,6 +463,7 @@ func (r *sessionBinder) AppendMessage(ctx context.Context, p engine.AppendParams
 		ClaimToken:          p.ClaimToken,
 		MediaPendingSeconds: p.MediaPendingSeconds,
 		ForceFresh:          p.Message.ForceFresh,
+		StableTitle:         infoflowChatTitle(p.Message),
 	})
 }
 

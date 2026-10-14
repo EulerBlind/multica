@@ -2,6 +2,26 @@ package engine
 
 import "testing"
 
+func TestChooseSessionTitleDefaultsWhenUnset(t *testing.T) {
+	got, stable := chooseSessionTitle("", "hello world", "", false, false)
+	if stable || got != DeriveChatTitle("hello world") {
+		t.Fatalf("default path = %q stable=%v", got, stable)
+	}
+	got, stable = chooseSessionTitle("  李博的聊天  ", "hello", "hello", false, false)
+	if !stable || got != "李博的聊天" {
+		t.Fatalf("stable path = %q stable=%v", got, stable)
+	}
+	if shouldGenerateChannelTitle("李博的聊天", true) {
+		t.Fatal("stable title must suppress LLM generation")
+	}
+	if !shouldGenerateChannelTitle("hello", false) {
+		t.Fatal("default title still generates")
+	}
+	if shouldGenerateChannelTitle("", false) {
+		t.Fatal("empty title does not generate")
+	}
+}
+
 func TestDeriveChatTitle(t *testing.T) {
 	tests := []struct{ input, want string }{
 		{"\n#  发布检查\n后续", "发布检查"},

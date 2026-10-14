@@ -1295,3 +1295,91 @@ WHERE installation_id = $1 AND chat_type = 'p2p'`, install.ID).Scan(&aliceKey); 
 		t.Fatalf("p2p session keys = %q, want %q (each user keyed by their own id)", aliceKey, bobKey)
 	}
 }
+
+type infoflowTitleSpy struct{ generated int }
+
+func (infoflowTitleSpy) ChannelChatStarted(engine.ChannelChatStartedEvent) {}
+func (infoflowTitleSpy) ChannelChatTitleInitialized(pgtype.UUID, pgtype.UUID, pgtype.UUID, string) {
+}
+func (s *infoflowTitleSpy) GenerateChannelChatTitle(pgtype.UUID, pgtype.UUID, pgtype.UUID, string, string) {
+	s.generated++
+}
+
+func TestInfoFlowDBChatTitleUsesAccountName(t *testing.T) {
+	pool := infoflowDB(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	queries := db.New(pool)
+	fx := dbfx.New(pool, "", "")
+	suffix := util.UUIDToString(dbid.NewV7())
+	fx.UserID = fx.User(t, "Owner", "infoflow-n64-"+suffix+"@multica.test")
+	fx.WorkspaceID = fx.Workspace(t, "InfoFlow N64", "infoflow-n64-"+suffix)
+	fx.Member(t, fx.WorkspaceID, fx.UserID, "owner")
+	runtimeID := fx.Runtime(t, "Runtime")
+	agentID := fx.Agent(t, "Agent", runtimeID)
+	fx.Cleanup(t, "DELETE FROM channel_installation WHERE workspace_id = $1", fx.WorkspaceID)
+
+	appID := "164" + numericSuffix(suffix)
+	const botUserID = "4105001274"
+	srv, _ := infoflowTokenServer(t)
+	box, err := secretbox.New(bytes.Repeat([]byte{0x4E}, secretbox.KeySize))
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc, err := NewInstallService(queries, pool, box, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.http = srv.Client()
+	svc.apiBase = srv.URL
+	install, err := svc.RegisterBYO(ctx, RegisterBYOParams{
+		WorkspaceID: util.MustParseUUID(fx.WorkspaceID), AgentID: util.MustParseUUID(agentID),
+		InitiatorID: util.MustParseUUID(fx.UserID), ApplicationID: appID,
+		AppKey: "key-" + suffix, AppSecret: "secret-" + suffix, BotUserID: botUserID,
+	})
+	if err != nil {
+		t.Fatalf("RegisterBYO: %v", err)
+	}
+	spy := &infoflowTitleSpy{}
+	router := engine.NewRouter(infoflowTestIssues{}, infoflowTestTasks{}, queries, engine.RouterConfig{Lifecycle: spy})
+	router.Register(TypeInfoFlow, NewResolverSet(queries, pool, nil, nil))
+
+	groupID := "1256" + numericSuffix(suffix)
+	sender := "v_liuchunqi01"
+	raw := json.RawMessage(`{"agentid":"` + appID + `","groupid":"` + groupID +
+		`","message":{"header":{"fromuserid":"` + sender + `","toid":"` + groupID +
+		`","totype":"GROUP","msgtype":"TEXT","messageid":"n64-` + suffix +
+		`"},"body":[{"type":"AT","atuserids":["` + botUserID + `"]},{"type":"TEXT","content":"帮我看一下这段很长的问题"}]}}`)
+	msg, ok := inboundFromPayload(raw, appID, botUserID)
+	if !ok {
+		t.Fatal("normalize")
+	}
+	if err := router.Handle(ctx, msg); err != nil {
+		t.Fatal(err)
+	}
+	raw2 := json.RawMessage(`{"agentid":"` + appID + `","groupid":"` + groupID +
+		`","message":{"header":{"fromuserid":"` + sender + `","toid":"` + groupID +
+		`","totype":"GROUP","msgtype":"TEXT","messageid":"n64b-` + suffix +
+		`"},"body":[{"type":"AT","atuserids":["` + botUserID + `"]},{"type":"TEXT","content":"第二条不该改标题"}]}}`)
+	msg2, ok := inboundFromPayload(raw2, appID, botUserID)
+	if !ok {
+		t.Fatal("normalize 2")
+	}
+	if err := router.Handle(ctx, msg2); err != nil {
+		t.Fatal(err)
+	}
+	var title string
+	if err := pool.QueryRow(ctx, `
+SELECT s.title FROM chat_session s
+JOIN channel_chat_session_binding b ON b.chat_session_id = s.id
+WHERE b.installation_id = $1 AND b.channel_chat_id = $2`, install.ID, groupID+":"+sender).Scan(&title); err != nil {
+		t.Fatal(err)
+	}
+	want := groupID + "-" + sender + "的聊天"
+	if title != want {
+		t.Fatalf("title = %q, want %q", title, want)
+	}
+	if spy.generated != 0 {
+		t.Fatalf("LLM title generation ran %d times", spy.generated)
+	}
+}
