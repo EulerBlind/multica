@@ -105,10 +105,25 @@ func (s *sender) sendChunked(ctx context.Context, target infoflowSendTarget, tex
 	}
 	batches := splitTextChunks(body, infoflowMaxTextRunes)
 	ids := make([]string, 0, len(batches))
+	// A Markdown body and an AT element in the SAME group message do not
+	// highlight or notify the asker on the live gateway (TEXT+AT does). Send
+	// the mention as its own TEXT message first, then keep every content batch
+	// as MD with no AT. atuserids stays the inbound fromuserid (account id);
+	// the official send shape uses that id, not the member-list imId.
+	// preludeDelivered: the asker was already @-mentioned in a leading TEXT
+	// message. Markdown content batches never carry AT. A later TEXT retry
+	// re-attaches AT only when that prelude did not land.
+	preludeDelivered := false
+	if useMD && strings.TrimSpace(target.MentionUserID) != "" {
+		if id, err := s.sendOnce(ctx, target, " ", msgTypeText); err == nil {
+			ids = append(ids, id)
+			preludeDelivered = true
+		}
+	}
 	for i, batch := range batches {
 		batchTarget := target
-		if i > 0 {
-			// Only the first batch @ mentions the asker.
+		if useMD || preludeDelivered || i > 0 {
+			// Only the first plain-text batch @ mentions the asker.
 			batchTarget.MentionUserID = ""
 		}
 		id, err := s.sendOnce(ctx, batchTarget, batch, msgType)
@@ -124,7 +139,10 @@ func (s *sender) sendChunked(ctx context.Context, target infoflowSendTarget, tex
 			// batch. The AT is re-attached only when the first batch itself failed
 			// (i == 0).
 			if msgType == msgTypeMD {
-				retryIDs, retryErr := s.sendBatchesAsText(ctx, target, batches[i:], i == 0)
+				// The mention, when it landed, is the leading TEXT message.
+				// Re-attach it on the TEXT retry only if that prelude never
+				// went out (plain-text path, or the prelude itself failed).
+				retryIDs, retryErr := s.sendBatchesAsText(ctx, target, batches[i:], i == 0 && !preludeDelivered)
 				delivered := append(append([]string(nil), ids...), retryIDs...)
 				outcome := infoflowSendOutcome{MsgType: msgTypeText, DeliveredBatches: len(delivered)}
 				if retryErr != nil {

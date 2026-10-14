@@ -27,11 +27,19 @@ type infoflowRaw struct {
 			MessageID  any    `json:"messageid"`
 		} `json:"header"`
 		Body  []map[string]any `json:"body"`
-		Reply *struct {
-			MessageID any    `json:"messageid"`
-			Preview   string `json:"preview"`
-		} `json:"reply"`
+		Reply *infoflowQuote   `json:"reply"`
+		Quote *infoflowQuote   `json:"quote"`
 	} `json:"message"`
+}
+
+// infoflowQuote is a quoted/replied message carried beside the sender's own
+// body. The live gateway puts text in preview and images in a nested body;
+// both shapes are read so a quoted image URL is not dropped.
+type infoflowQuote struct {
+	MessageID any              `json:"messageid"`
+	Preview   string           `json:"preview"`
+	Content   string           `json:"content"`
+	Body      []map[string]any `json:"body"`
 }
 
 // inboundFromPayload translates a raw InfoFlow event payload into the
@@ -144,9 +152,24 @@ func normalizeGroupPayloadReasonWithIdentity(payload infoflowRaw, self identityS
 	if senderID == "" {
 		return channel.InboundMessage{}, dropReasonMissingSender, false
 	}
-	text := flattenGroupText(payload.Message.Body)
+	own := flattenGroupText(payload.Message.Body)
+	quoted := flattenQuoted(payload.Message)
+	text := own
+	if quoted != "" {
+		text = "<quoted_message>\n" + quoted + "\n</quoted_message>"
+		if strings.TrimSpace(own) != "" {
+			text += "\n\n" + own
+		}
+	}
 	if strings.TrimSpace(text) == "" && !containsAT(payload.Message.Body) {
 		return channel.InboundMessage{}, dropReasonEmptyContent, false
+	}
+	command := own
+	if command == "" && quoted != "" {
+		// Router copies an empty CommandText from the already-enriched Text,
+		// which would make the quote the chat title. A space is not a command
+		// and is not the quoted body.
+		command = " "
 	}
 	eventType := "MESSAGE_RECEIVE"
 	if payload.EventType != "" {
@@ -154,15 +177,16 @@ func normalizeGroupPayloadReasonWithIdentity(payload infoflowRaw, self identityS
 	}
 	msgID := anyString(h.MessageID)
 	msg := channel.InboundMessage{
-		EventID:        msgID,
-		MessageID:      msgID,
-		Source:         channel.Source{ChannelType: TypeInfoFlow, ChatID: groupID, ChatType: channel.ChatTypeGroup, SenderID: senderID},
-		Type:           msgTypeFromHeader(h.MsgType),
-		Text:           text,
-		CommandText:    text,
-		ReplyTo:        groupReplyTo(payload.Message),
-		AddressedToBot: addressedToBot(payload, self, eventType),
-		Raw:            mustJSON(payload),
+		EventID:            msgID,
+		MessageID:          msgID,
+		Source:             channel.Source{ChannelType: TypeInfoFlow, ChatID: groupID, ChatType: channel.ChatTypeGroup, SenderID: senderID},
+		Type:               msgTypeFromHeader(h.MsgType),
+		Text:               text,
+		CommandText:        command,
+		HasSelectedContext: quoted != "",
+		ReplyTo:            groupReplyTo(payload.Message),
+		AddressedToBot:     addressedToBot(payload, self, eventType),
+		Raw:                mustJSON(payload),
 	}
 	// NOTE: an unaddressed group message is deliberately routed (ok=true). The
 	// engine owns that decision: it drops with drop_reason=not_addressed_in_group,
@@ -197,7 +221,13 @@ func flattenGroupText(body []map[string]any) string {
 				parts = append(parts, s)
 			}
 		case "IMAGE":
-			if url := firstURL(item["downloadurl"], item["url"]); url != "" {
+			url := firstURL(item["downloadurl"], item["url"])
+			if url == "" {
+				if c := stringOrEmpty(item["content"]); strings.HasPrefix(c, "http") {
+					url = c
+				}
+			}
+			if url != "" {
 				parts = append(parts, "[IMAGE] "+url)
 			} else {
 				parts = append(parts, "[IMAGE]")
@@ -212,6 +242,15 @@ func flattenGroupText(body []map[string]any) string {
 		case "LINK":
 			if s := firstURL(item["label"], item["url"]); s != "" {
 				parts = append(parts, "链接: "+s)
+			}
+		case "QUOTE", "REPLY", "REFERENCE":
+			if nested := flattenGroupText(bodyItems(item["body"])); nested != "" {
+				parts = append(parts, nested)
+			} else if s := stringOrEmpty(item["content"]); s != "" {
+				parts = append(parts, s)
+			}
+			if url := firstURL(item["downloadurl"], item["url"], item["content"]); strings.HasPrefix(url, "http") && !strings.Contains(strings.Join(parts, "\n"), url) {
+				parts = append(parts, "[IMAGE] "+url)
 			}
 		default:
 			if s := stringOrEmpty(item["content"]); s != "" {
@@ -246,7 +285,7 @@ func addressedToBot(payload infoflowRaw, self identitySet, eventType string) boo
 		return false
 	}
 	// A reply to the bot is an explicit signal regardless of @.
-	if payload.Message.Reply != nil {
+	if payload.Message.Reply != nil || payload.Message.Quote != nil {
 		return true
 	}
 	for _, item := range payload.Message.Body {
@@ -386,6 +425,58 @@ func containsAT(body []map[string]any) bool {
 	return false
 }
 
+// flattenQuoted collects text and image URLs from a quote/reply envelope.
+// The sender's own body is not included; callers prepend this as context.
+func flattenQuoted(message *struct {
+	Header struct {
+		FromUserID string `json:"fromuserid"`
+		ToID       any    `json:"toid"`
+		ToType     string `json:"totype"`
+		MsgType    string `json:"msgtype"`
+		MessageID  any    `json:"messageid"`
+	} `json:"header"`
+	Body  []map[string]any `json:"body"`
+	Reply *infoflowQuote   `json:"reply"`
+	Quote *infoflowQuote   `json:"quote"`
+}) string {
+	if message == nil {
+		return ""
+	}
+	var parts []string
+	for _, q := range []*infoflowQuote{message.Reply, message.Quote} {
+		if q == nil {
+			continue
+		}
+		if s := strings.TrimSpace(q.Preview); s != "" {
+			parts = append(parts, s)
+		}
+		if s := strings.TrimSpace(q.Content); s != "" && s != strings.TrimSpace(q.Preview) {
+			parts = append(parts, s)
+		}
+		if nested := flattenGroupText(q.Body); nested != "" {
+			parts = append(parts, nested)
+		}
+	}
+	return strings.TrimSpace(strings.Join(parts, "\n"))
+}
+
+func bodyItems(v any) []map[string]any {
+	switch t := v.(type) {
+	case []map[string]any:
+		return t
+	case []any:
+		out := make([]map[string]any, 0, len(t))
+		for _, item := range t {
+			if m, ok := item.(map[string]any); ok {
+				out = append(out, m)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
 func groupReplyTo(message *struct {
 	Header struct {
 		FromUserID string `json:"fromuserid"`
@@ -395,15 +486,20 @@ func groupReplyTo(message *struct {
 		MessageID  any    `json:"messageid"`
 	} `json:"header"`
 	Body  []map[string]any `json:"body"`
-	Reply *struct {
-		MessageID any    `json:"messageid"`
-		Preview   string `json:"preview"`
-	} `json:"reply"`
+	Reply *infoflowQuote   `json:"reply"`
+	Quote *infoflowQuote   `json:"quote"`
 }) *channel.ReplyCtx {
-	if message == nil || message.Reply == nil {
+	if message == nil {
 		return nil
 	}
-	return &channel.ReplyCtx{MessageID: anyString(message.Reply.MessageID)}
+	q := message.Reply
+	if q == nil {
+		q = message.Quote
+	}
+	if q == nil {
+		return nil
+	}
+	return &channel.ReplyCtx{MessageID: anyString(q.MessageID)}
 }
 
 func msgTypeFromPrivate(payload infoflowRaw) channel.MsgType {

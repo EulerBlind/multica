@@ -29,3 +29,27 @@ func TestInboundGroupAtBot(t *testing.T) {
 		t.Fatalf("unexpected normalized group message: %+v", msg)
 	}
 }
+
+// TestInboundGroupQuoteKeepsImageURL: a quote/reply whose body is an image
+// must land in Text as a URL, while CommandText stays the sender's own line.
+func TestInboundGroupQuoteKeepsImageURL(t *testing.T) {
+	raw := `{"groupid":"12572761","message":{"header":{"fromuserid":"wangjianghua","totype":"GROUP","msgtype":"MIXED","messageid":"m9"},"reply":{"messageid":"m8","preview":"看下这张图","body":[{"type":"IMAGE","downloadurl":"https://example.com/a.png"},{"type":"TEXT","content":"说明"}]},"body":[{"type":"AT","atuserids":["4100104388"]},{"type":"TEXT","content":"这张图是什么"}]}}`
+	msg, ok := inboundFromPayload(json.RawMessage(raw), "8682", "4100104388")
+	if !ok {
+		t.Fatal("expected ok")
+	}
+	if !msg.HasSelectedContext || !msg.AddressedToBot {
+		t.Fatalf("quote must be selected context and addressed: %+v", msg)
+	}
+	if msg.CommandText != "这张图是什么" {
+		t.Fatalf("CommandText = %q", msg.CommandText)
+	}
+	for _, want := range []string{"看下这张图", "https://example.com/a.png", "[IMAGE]", "说明", "这张图是什么"} {
+		if !strings.Contains(msg.Text, want) {
+			t.Fatalf("Text missing %q: %s", want, msg.Text)
+		}
+	}
+	if msg.ReplyTo == nil || msg.ReplyTo.MessageID != "m8" {
+		t.Fatalf("ReplyTo = %+v", msg.ReplyTo)
+	}
+}
