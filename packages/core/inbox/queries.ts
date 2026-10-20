@@ -1,6 +1,6 @@
 import type { InfiniteData, QueryClient } from "@tanstack/react-query";
 import type { ArchivedInboxPage } from "../types/inbox";
-import { EMPTY_INBOX_FILTERS, type InboxFilters } from "./filter-store";
+import { EMPTY_INBOX_FILTERS, type ArchivedInboxFilters } from "./filter-store";
 import { infiniteQueryOptions, queryOptions, useQuery } from "@tanstack/react-query";
 import { api } from "../api";
 import type { InboxItem, InboxWorkspaceUnread } from "../types";
@@ -36,12 +36,14 @@ export function archivedInboxListOptions(wsId: string) {
   });
 }
 
-function normalizedInboxFilters(filters: InboxFilters): InboxFilters {
+// Lists the archived dimensions explicitly, so an `idleOnly` carried in from
+// the active inbox never changes the key or refetches the archive.
+function normalizedInboxFilters(filters: ArchivedInboxFilters): ArchivedInboxFilters {
   return { statuses: [...filters.statuses].sort(), priorities: [...filters.priorities].sort(),
     actors: [...filters.actors].sort(), unreadOnly: filters.unreadOnly };
 }
 
-export function archivedInboxPagesOptions(wsId: string, filters: InboxFilters) {
+export function archivedInboxPagesOptions(wsId: string, filters: ArchivedInboxFilters) {
   return infiniteQueryOptions({
     queryKey: [...inboxKeys.pages(wsId), normalizedInboxFilters(filters)],
     initialPageParam: null as string | null,
@@ -51,7 +53,7 @@ export function archivedInboxPagesOptions(wsId: string, filters: InboxFilters) {
   });
 }
 
-export function archivedInboxLookupOptions(wsId: string, groupId: string, filters: InboxFilters = EMPTY_INBOX_FILTERS) {
+export function archivedInboxLookupOptions(wsId: string, groupId: string, filters: ArchivedInboxFilters = EMPTY_INBOX_FILTERS) {
   return queryOptions({
     queryKey: [...inboxKeys.lookup(wsId), groupId, normalizedInboxFilters(filters)],
     queryFn: ({ signal }) => api.listArchivedInboxPage(filters, { groupId, signal }),
@@ -60,7 +62,7 @@ export function archivedInboxLookupOptions(wsId: string, groupId: string, filter
   });
 }
 
-export function archivedInboxFacetsOptions(wsId: string, filters: InboxFilters) {
+export function archivedInboxFacetsOptions(wsId: string, filters: ArchivedInboxFilters) {
   return queryOptions({
     queryKey: [...inboxKeys.facets(wsId), normalizedInboxFilters(filters)],
     queryFn: ({ signal }) => api.getArchivedInboxFacets(filters, signal),
