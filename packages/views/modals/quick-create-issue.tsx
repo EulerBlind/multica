@@ -143,6 +143,7 @@ export function AgentCreatePanel({
   const userId = useAuthStore((s) => s.user?.id);
   const { data: members = [] } = useQuery(memberListOptions(wsId));
   const { data: agents = [] } = useQuery(agentListOptions(wsId));
+  const { data: runtimes = [] } = useQuery(runtimeListOptions(wsId));
   const { data: squads = [] } = useQuery(squadListOptions(wsId));
   // Pull `isSuccess` so the stale-id sweep below can distinguish "still
   // loading" from "loaded as empty". Reading length alone treats both as
@@ -166,9 +167,10 @@ export function AgentCreatePanel({
         (a) =>
           !a.archived_at &&
           isAgentRuntimeBound(a) &&
+          !runtimes.some((r) => r.id === a.runtime_id && r.provider === "qoder_cloud") &&
           canAssignAgent(a, userId, memberRole),
       ),
-    [agents, userId, memberRole],
+    [agents, runtimes, userId, memberRole],
   );
   const visibleAgentIds = useMemo(
     () => new Set(visibleAgents.map((a) => a.id)),
@@ -333,7 +335,6 @@ export function AgentCreatePanel({
   // (git-describe shape) are exempted inside checkQuickCreateCliVersion
   // — frontend and server share the same signal there, so they agree by
   // construction across web/desktop/staging without comparing env flags.
-  const { data: runtimes = [] } = useQuery(runtimeListOptions(wsId));
   const selectedRuntime = useMemo(
     () =>
       selectedAgent?.runtime_id
