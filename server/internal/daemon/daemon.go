@@ -7449,9 +7449,10 @@ func skillRefFromBundle(bundle SkillData) SkillRefData {
 // taskModelSelection is what a task actually launches with: the model
 // selector plus the capability overrides that survived validation.
 type taskModelSelection struct {
-	Model         string
-	ThinkingLevel string
-	ServiceTier   string
+	Model                string
+	ThinkingLevel        string
+	ServiceTier          string
+	ThinkingLevelWarning string
 }
 
 // resolveTaskModelSelection settles the model selector and its capability
@@ -7542,7 +7543,7 @@ func resolveTaskModelSelection(
 	// persisted level and let the CLI object, unless the binary itself has no
 	// such effort flag (MUL-7691).
 	if sel.ThinkingLevel != "" {
-		ok, err := agent.ValidateThinkingLevelWith(loadCatalog, provider, sel.Model, sel.ThinkingLevel)
+		check, err := agent.CheckThinkingLevelWith(loadCatalog, provider, sel.Model, sel.ThinkingLevel)
 		if err != nil {
 			taskLog.Warn("thinking_level: catalog cannot validate; passing through",
 				"provider", provider,
@@ -7550,17 +7551,36 @@ func resolveTaskModelSelection(
 				"thinking_level", sel.ThinkingLevel,
 				"error", err,
 			)
-		} else if !ok {
+		} else if !check.Valid {
 			taskLog.Warn("thinking_level: not valid for this (provider, model); skipping injection",
 				"provider", provider,
 				"model", sel.Model,
 				"thinking_level", sel.ThinkingLevel,
+				"reason", check.Reason,
 			)
+			sel.ThinkingLevelWarning = fmt.Sprintf("Thinking level %q was not applied: %s. The runtime will use its default thinking level.", sel.ThinkingLevel, check.Reason)
 			sel.ThinkingLevel = ""
 		}
 	}
 
 	return sel
+}
+
+func (d *Daemon) reportThinkingLevelWarning(ctx context.Context, taskID, warning string, msgSeq *atomic.Int32, taskLog *slog.Logger) {
+	if warning == "" {
+		return
+	}
+	message := TaskMessageData{
+		Seq:       int(msgSeq.Add(1)),
+		Type:      "text",
+		Content:   redact.Text(warning) + "\n\n",
+		CreatedAt: time.Now(),
+	}
+	reportCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := d.client.ReportTaskMessages(reportCtx, taskID, []TaskMessageData{message}); err != nil {
+		taskLog.Warn("failed to report thinking-level warning", "error", err)
+	}
 }
 
 // qualifyTaskModel promotes a persisted model id to the canonical
@@ -8761,6 +8781,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// Shared across the resume-retry below so the retry's transcript rows
 	// keep ascending seq values for the same task.
 	var msgSeq atomic.Int32
+	d.reportThinkingLevelWarning(ctx, task.ID, selection.ThinkingLevelWarning, &msgSeq, taskLog)
 	result, tools, err := d.executeAndDrain(ctx, backend, prompt, execOpts, taskLog, task.ID, env.CodexHome, &msgSeq)
 	if err != nil {
 		return TaskResult{}, err
