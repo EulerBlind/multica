@@ -455,14 +455,6 @@ vi.mock("../issues/components/pickers/property-picker", () => ({
   PickerEmpty: () => <div data-testid="picker-empty" />,
 }));
 
-vi.mock("@multica/ui/components/ui/button", () => ({
-  Button: ({ children, disabled, onClick }: { children: ReactNode; disabled?: boolean; onClick?: () => void }) => (
-    <button type="button" disabled={disabled} onClick={onClick}>
-      {children}
-    </button>
-  ),
-}));
-
 vi.mock("@multica/ui/components/ui/switch", () => ({
   Switch: ({ checked, onCheckedChange }: { checked: boolean; onCheckedChange: (v: boolean) => void }) => (
     <input
@@ -1208,7 +1200,11 @@ describe("AgentCreatePanel", () => {
         ),
         "Ship it",
       );
-      expect(screen.getByRole("button", { name: /^Create$/i })).toBeDisabled();
+      // Blocked but still hoverable so its tooltip can explain why.
+      const create = screen.getByRole("button", { name: /^Create$/i });
+      expect(create).toHaveAttribute("aria-disabled", "true");
+      await user.click(create);
+      expect(mockQuickCreateIssue).not.toHaveBeenCalled();
     });
   });
 

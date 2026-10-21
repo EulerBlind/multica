@@ -27,6 +27,7 @@ import { ApiError } from "@multica/core/api";
 import { agentListOptions, memberListOptions, squadListOptions } from "@multica/core/workspace/queries";
 import { shortcutMatchesEvent, useShortcut } from "@multica/core/shortcuts";
 import { Button } from "@multica/ui/components/ui/button";
+import { IconButton } from "@multica/ui/components/common/icon-button";
 import { Input } from "@multica/ui/components/ui/input";
 import { Textarea } from "@multica/ui/components/ui/textarea";
 import {
@@ -102,11 +103,11 @@ export function WakeupCreate({
     >
       <PopoverTrigger
         render={
-          <Button
+          <IconButton
             variant="ghost"
             size="icon-xs"
             className="text-muted-foreground"
-            aria-label={t(($) => $.wakeups.create.open)}
+            label={t(($) => $.wakeups.create.open)}
           />
         }
       >

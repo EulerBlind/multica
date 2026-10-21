@@ -2,7 +2,7 @@
 
 import type { ReactNode } from "react";
 import { ArrowLeft } from "lucide-react";
-import { Button } from "@multica/ui/components/ui/button";
+import { IconButton } from "@multica/ui/components/common/icon-button";
 import { useT } from "../../i18n";
 
 /**
@@ -31,16 +31,17 @@ export function AgentCreateShell({
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-background">
       <header className="flex h-14 shrink-0 items-center gap-3 border-b px-5">
-        <Button
+        <IconButton
           type="button"
           variant="ghost"
           size="icon"
           onClick={onBack}
           disabled={backDisabled}
-          aria-label={t(($) => $.creation_studio.back)}
+          label={t(($) => $.creation_studio.back)}
+          tooltipSide="bottom"
         >
           <ArrowLeft className="size-4" aria-hidden="true" />
-        </Button>
+        </IconButton>
         <div className="min-w-0">
           <h1 className="truncate text-body font-semibold">{title}</h1>
           <p className="truncate text-caption text-muted-foreground">{step}</p>

@@ -40,6 +40,7 @@ import {
 import { runtimeDisplayLabel, runtimeListOptions } from "@multica/core/runtimes";
 import { useAgentPermissions } from "@multica/core/permissions";
 import { Button } from "@multica/ui/components/ui/button";
+import { IconButton } from "@multica/ui/components/common/icon-button";
 import { CapabilityBanner } from "@multica/ui/components/common/capability-banner";
 import {
   Dialog,
@@ -588,8 +589,14 @@ function DetailHeader({
             {!isArchived && canArchive && hasMoreActions ? (
               <DropdownMenu>
                 <DropdownMenuTrigger
-                  render={<Button variant="ghost" size="icon-sm" />}
-                  aria-label={t(($) => $.detail.more_actions_aria)}
+                  render={
+                    <IconButton
+                      variant="ghost"
+                      size="icon-sm"
+                      label={t(($) => $.detail.more_actions_aria)}
+                      tooltipSide="bottom"
+                    />
+                  }
                 >
                   <MoreHorizontal
                     className="h-4 w-4 text-muted-foreground"
