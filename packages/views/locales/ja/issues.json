@@ -1570,6 +1570,7 @@
     },
     "picker": {
       "header": "{{workflow}} · プロジェクト「{{project}}」に従う",
+      "header_no_project": "{{workflow}} のステータス · プロジェクトなし",
       "footer": "このタスクのワークフローのステータスだけを表示しています。右側はそのステータスに入ったときの引き継ぎ先です。"
     },
     "confirm": {
