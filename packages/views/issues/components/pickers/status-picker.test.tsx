@@ -196,6 +196,7 @@ describe("StatusPicker in a project that uses a workflow", () => {
       name: "Delivery",
       description: "",
       is_default: false,
+      owner_id: null,
       steps: [
         { status_key: "todo", handler: { type: "none" }, instructions: "" },
         { status_key: "qa", handler: { type: "agent", id: "agent-1" }, instructions: "" },

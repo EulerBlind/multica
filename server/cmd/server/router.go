@@ -2180,9 +2180,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				})
 			})
 
-			// Project workflows (MUL-7420). Reads are open to any member; writes
-			// are gated inside the handlers to workspace owners/admins and, for
-			// switching a project's workflow, its lead.
+			// Project workflows (MUL-7420). Reads and creates are open to any
+			// member; edits and deletes are gated inside the handlers to the
+			// workflow's owner and workspace owners/admins (MUL-8120), and
+			// switching a project's workflow to admins and the project's lead.
 			r.Route("/api/issue-workflows", func(r chi.Router) {
 				r.Get("/", h.ListIssueWorkflows)
 				r.Post("/", h.CreateIssueWorkflow)
