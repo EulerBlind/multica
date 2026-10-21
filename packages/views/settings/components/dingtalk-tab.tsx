@@ -186,7 +186,7 @@ export function DingTalkConnectionLabel({
                   <TooltipContent
                     side="top"
                     align="start"
-                    className="max-w-80 items-start whitespace-normal border-0 bg-surface-raised px-3 py-2 text-popover-foreground shadow-[var(--menu-shadow)] ring-1 ring-surface-border"
+                    className="max-w-80 items-start whitespace-normal px-3 py-2"
                   >
                     <span className="leading-relaxed">
                       {permissionTooltipPrefix}{" "}
