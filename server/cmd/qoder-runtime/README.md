@@ -80,8 +80,9 @@ for the task. The bridge reads it immediately before session creation and inject
 it into an ephemeral request copy. Neither the token nor its file path enters the
 run journal or prompt. Restart/resume reads the current file, allowing rotation.
 Missing credentials fail the task without creating a Qoder session. No workspace
-wide fallback credential is used. This is bridge-hosted configuration; Multica's
-web UI does not yet manage GitHub credentials for this runtime.
+wide fallback credential is used. This is the standalone bridge's configuration;
+managed connections set repository tokens in the web and desktop apps instead
+(see below).
 
 A project may bind one HTTPS GitHub repository and an optional branch ref.
 Without one, the agent's default repository (`runtime_config.repository`) is
@@ -185,9 +186,10 @@ the administrator chooses **Update credentials**. The quick-add dialog creates a
 Multica agent linked to an existing QCA Agent and uses the configured environment.
 
 
-Workspace administrators can open **Runtimes → Add remote runtime → Qoder Cloud Agent** to configure one
+Workspace administrators can open **Runtimes → Add → Cloud services → Qoder Cloud Agent** to configure one
 managed QCA connection per workspace, load environments from the PAT and check environment access, bind GitHub
-repository tokens, save/start, or stop an idle runtime. The existing project
+repository tokens, and **Connect**. The Qoder Cloud Agent page can later **Pause** an idle runtime, resume it, or
+**Disconnect** it. The menu entry only appears when the server has `MULTICA_VCS_SECRET_KEY` set. The existing project
 resource picker selects the repository and starting branch. The managed form
 offers Qoder's official regions, `https://api.qoder.com/api/v1/cloud` (Global) and
 `https://api.qoder.com.cn/api/v1/cloud` (China); a PAT works only in the region

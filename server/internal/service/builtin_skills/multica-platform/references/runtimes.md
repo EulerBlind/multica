@@ -207,7 +207,7 @@ append-only behavior. The Qoder bridge uses its remote event IDs as these keys.
 Qoder Cloud bridge repository runs require `github_token_files` in its private JSON configuration, mapping each GitHub repository URL to a 0600 token file. Credentials are injected only into session creation requests, never into prompts or recovery state. Managed connections also support repository credential configuration in the runtime dialog.
 
 Workspace admins may also configure one managed QCA connection in **Runtimes →
-Add remote runtime → Qoder Cloud Agent** (web and desktop). The server prerequisite is
+Add → Cloud services → Qoder Cloud Agent** (web and desktop). The server prerequisite is
 `MULTICA_VCS_SECRET_KEY`. The server
 supervises the bridge, encrypts credentials in the database, and supports idle
 stop/restart. Active tasks must finish or be cancelled before configuration
