@@ -202,6 +202,8 @@
     "grouping_section": "그룹화",
     "ordering_section": "정렬",
     "card_properties_section": "카드 속성",
+    "columns_section": "열",
+    "columns_locked_by_filter": "열을 표시하거나 숨기려면 상태 필터를 해제하세요.",
     "ascending_title": "오름차순",
     "descending_title": "내림차순",
     "newest_first": "최신순",
@@ -359,18 +361,13 @@
     "toggle_collapse": "레인 접기/펼치기"
   },
   "board": {
-    "hidden_columns_label": "숨긴 열",
     "hide_column": "열 숨기기",
-    "show_column": "열 표시",
     "add_issue_tooltip": "태스크 추가",
     "empty_column": "태스크 없음",
     "empty_grouping": "일치하는 태스크가 없습니다",
     "no_value": "값 없음",
     "ordered_by": "{{field}} 기준으로 정렬된 보드",
-    "manual_reorder_hint": "열 안의 순서를 바꾸려면 정렬을 '수동'으로 전환하세요.",
-    "filter_to_status": "이 상태로 필터",
-    "outside_workflow": "이 보드의 워크플로에 없음",
-    "workflow_columns_note": "보드의 열은 워크플로가 정합니다. 프로젝트 밖의 보기는 Default를 사용합니다."
+    "manual_reorder_hint": "열 안의 순서를 바꾸려면 정렬을 '수동'으로 전환하세요."
   },
   "peek": {
     "panel_label": "태스크 미리보기",

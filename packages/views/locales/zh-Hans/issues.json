@@ -202,6 +202,8 @@
     "grouping_section": "分组",
     "ordering_section": "排序",
     "card_properties_section": "卡片属性",
+    "columns_section": "列",
+    "columns_locked_by_filter": "清除状态筛选后才能显示或隐藏列。",
     "ascending_title": "升序",
     "descending_title": "降序",
     "newest_first": "最新优先",
@@ -359,18 +361,13 @@
     "toggle_collapse": "切换泳道"
   },
   "board": {
-    "hidden_columns_label": "隐藏的列",
     "hide_column": "隐藏列",
-    "show_column": "显示列",
     "add_issue_tooltip": "新建任务",
     "empty_column": "无任务",
     "empty_grouping": "没有匹配的任务",
     "no_value": "未设置",
     "ordered_by": "按{{field}}排序",
-    "manual_reorder_hint": "切换到“手动”排序后，才能调整同一列内的顺序。",
-    "filter_to_status": "按此状态筛选",
-    "outside_workflow": "不在当前看板的工作流里",
-    "workflow_columns_note": "看板的列由工作流决定，项目外的视图使用 Default 工作流。"
+    "manual_reorder_hint": "切换到“手动”排序后，才能调整同一列内的顺序。"
   },
   "peek": {
     "panel_label": "任务预览",

@@ -202,6 +202,8 @@
     "grouping_section": "グループ化",
     "ordering_section": "並び替え",
     "card_properties_section": "カードのプロパティ",
+    "columns_section": "列",
+    "columns_locked_by_filter": "列を表示・非表示にするには、ステータスの絞り込みを解除してください。",
     "ascending_title": "昇順",
     "descending_title": "降順",
     "newest_first": "新しい順",
@@ -359,18 +361,13 @@
     "toggle_collapse": "レーンの開閉"
   },
   "board": {
-    "hidden_columns_label": "非表示の列",
     "hide_column": "列を非表示",
-    "show_column": "列を表示",
     "add_issue_tooltip": "タスクを追加",
     "empty_column": "タスクなし",
     "empty_grouping": "一致するタスクがありません",
     "no_value": "値なし",
     "ordered_by": "{{field}} 順に並べたボード",
-    "manual_reorder_hint": "列内の順序を変更するには、並び順を「手動」に切り替えてください。",
-    "filter_to_status": "このステータスで絞り込む",
-    "outside_workflow": "このボードのワークフローにはありません",
-    "workflow_columns_note": "ボードの列はワークフローで決まります。プロジェクト外のビューは Default を使います。"
+    "manual_reorder_hint": "列内の順序を変更するには、並び順を「手動」に切り替えてください。"
   },
   "peek": {
     "panel_label": "タスクのプレビュー",
