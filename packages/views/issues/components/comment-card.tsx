@@ -91,10 +91,13 @@ function StickyHeaderShell({
     );
   }
 
+  // `mb-1` reserves room for the fade's `h-1` below the header, so at rest the
+  // fade covers empty space instead of the first line of the body. Callers
+  // take the same 4px out of their bottom padding.
   return (
     <div
       className={cn(
-        "sticky top-0 z-10 transition-colors duration-700",
+        "sticky top-0 z-10 mb-1 transition-colors duration-700",
         !highlighted && stickyHeaderFadeClass,
         highlighted ? highlightedCommentBackgroundClass : "bg-card",
         className,
@@ -691,7 +694,7 @@ function CommentRow({
           highlight state while it occludes the body scrolling underneath. */}
       <StickyHeaderShell
         highlighted={isHighlighted}
-        className="flex items-center gap-2.5 px-4 max-md:px-3 pt-3 pb-2"
+        className="flex items-center gap-2.5 px-4 max-md:px-3 pt-3 pb-1"
       >
         <ActorAvatar
           actorType={entry.actor_type}
@@ -1196,7 +1199,7 @@ function CommentCardImpl({
           <StickyHeaderShell
             sticky={stickyHeader}
             highlighted={isHighlighted}
-            className={cn("px-4 max-md:px-3", open ? "pt-3 pb-2" : "py-3")}
+            className={cn("px-4 max-md:px-3", !open ? "py-3" : stickyHeader ? "pt-3 pb-1" : "pt-3 pb-2")}
           >
             <div className="flex items-center gap-2.5">
               {deleted ? (
