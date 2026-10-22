@@ -155,8 +155,12 @@ import {
   type SubIssueRowProperties,
   type SubIssueRowPropertyKey,
 } from "@multica/core/issues/stores";
-import { useIssueSelectionStore } from "@multica/core/issues/stores/selection-store";
 import { BatchActionToolbar } from "./batch-action-toolbar";
+import {
+  IssueSurfaceSelectionProvider,
+  useCreateIssueSurfaceSelection,
+  useIssueSurfaceSelection,
+} from "../surface/selection-context";
 import { useIssueTimeline } from "../hooks/use-issue-timeline";
 import { useIssueReactions } from "../hooks/use-issue-reactions";
 import { useIssueSubscribers } from "../hooks/use-issue-subscribers";
@@ -839,9 +843,9 @@ function SubIssueRow({
   const locale = useLocale();
   const paths = useWorkspacePaths();
   const updateIssue = useUpdateIssue();
-  const selected = useIssueSelectionStore((s) => s.selectedIds.has(child.id));
+  const { selectedIds, toggle: toggleSelected } = useIssueSurfaceSelection();
+  const selected = selectedIds.has(child.id);
   const childStatusCatalog = useIssueStatuses(useWorkspaceId());
-  const toggleSelected = useIssueSelectionStore((s) => s.toggle);
   // Category, not key: a custom status in the done/cancelled categories is
   // finished work and has to strike through like any other. (MUL-6243)
   const isDone = issueBehavesAsAny(child, ["done", "closed"]);
@@ -2098,17 +2102,16 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     [issueId, setSubIssuesCollapsedFor],
   );
 
-  // Selection store is global (workspace-scoped); clear it whenever this
-  // issue detail is mounted or switched, so leftover selections from the
-  // main list view (or another sub-issue list) don't leak into this one.
-  const clearSelection = useIssueSelectionStore((s) => s.clear);
-  const selectedIds = useIssueSelectionStore((s) => s.selectedIds);
-  const selectIds = useIssueSelectionStore((s) => s.select);
-  const deselectIds = useIssueSelectionStore((s) => s.deselect);
-  useEffect(() => {
-    clearSelection();
-    return clearSelection;
-  }, [id, clearSelection]);
+  // The sub-issue list owns its selection, reset per issue. Rows, select-all
+  // and the inline batch toolbar must read the same one: a peek renders this
+  // inside a surface whose own selection provider would otherwise win for the
+  // toolbar while the rows wrote elsewhere.
+  const subIssueSelection = useCreateIssueSurfaceSelection(`sub-issues:${id}`);
+  const {
+    selectedIds,
+    select: selectIds,
+    deselect: deselectIds,
+  } = subIssueSelection;
 
   const childIssueIds = useMemo(() => childIssues.map((c) => c.id), [childIssues]);
   const childSelectedCount = childIssueIds.filter((cid) =>
@@ -3536,6 +3539,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
               // Provider hosts the shared right-click actions menu the rows
               // delegate to (one singleton menu, not one per row).
               <IssueContextMenuProvider>
+              <IssueSurfaceSelectionProvider selection={subIssueSelection}>
               <div className="mt-10 group/sub-issues">
                 {/* Header */}
                 <div className="flex items-center gap-2 mb-2">
@@ -3630,6 +3634,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                   );
                 })()}
               </div>
+              </IssueSurfaceSelectionProvider>
               </IssueContextMenuProvider>
             );
           })()}
