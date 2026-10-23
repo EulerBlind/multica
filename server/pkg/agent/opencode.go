@@ -481,6 +481,10 @@ func (b *opencodeBackend) processEvents(r io.Reader, ch chan<- Message) eventRes
 	stepProducedOutput := false // current step emitted text, a tool call, or reported usage
 	lastStepVoid := false       // the most recently closed step produced nothing at all
 
+	// exitIsTerminal: on 2.x the process outcome, not step bracketing, is the
+	// terminal signal. See the EOF check below for why.
+	exitIsTerminal := opencodeUsesV2Contract(b.cfg)
+
 	scanner := newAgentStreamScanner(r)
 
 	for scanner.Scan() {
@@ -506,10 +510,20 @@ func (b *opencodeBackend) processEvents(r io.Reader, ch chan<- Message) eventRes
 			b.handleTextEvent(event, ch, &output)
 			if event.Part.Text != "" {
 				stepProducedOutput = true
+				// On 2.x the step this text belongs to may never close, so the
+				// void-step guard would otherwise keep judging the run by an
+				// earlier empty step it already recovered from. 1.x still waits
+				// for that step's step_finish to clear the flag.
+				if exitIsTerminal {
+					lastStepVoid = false
+				}
 			}
 		case "tool_use":
 			b.handleToolUseEvent(event, ch)
 			stepProducedOutput = true
+			if exitIsTerminal {
+				lastStepVoid = false // same recovery rule as text above
+			}
 			if event.Part.Metadata == nil || !event.Part.Metadata.ProviderExecuted {
 				stepHasContinuationTool = true
 			}
@@ -564,14 +578,30 @@ func (b *opencodeBackend) processEvents(r io.Reader, ch chan<- Message) eventRes
 	// all means the run did not finish: its provider stream died and
 	// `opencode run` exited without emitting an error event. Fail closed on
 	// that structural evidence rather than reporting a false-green completion.
+	//
+	// OpenCode 2.x changes which of these shapes are evidence. Its CLI stops
+	// consuming step events as soon as the session settles, so the final step's
+	// step_finish is routinely never written (GH #8892, #9456): a completed
+	// text-only turn arrives as `step_start, text` → EOF, and a tool turn can
+	// end as `…, step_finish(tool-calls), text` → EOF with no new step_start.
+	// At the same time 2.x no longer exits quietly on a dead provider stream: a
+	// reset, truncated or empty stream surfaces an `error` event and a non-zero
+	// exit. So on 2.x the process outcome is the terminal signal — the caller
+	// already fails a non-zero exit, a cancellation/timeout and a failed prompt
+	// write, and error events / scanner errors fail it here. Only the two
+	// step-bracketing guards are waived; the void-step guard still applies,
+	// because a step that actually closed with nothing in it is no less dead
+	// on 2.x — unless later text or a tool call shows the run recovered from
+	// it (cleared in the loop above). 1.x and custom runtimes keep every guard
+	// unchanged.
 	noTerminalSignal := false
 	if finalStatus == "completed" {
 		switch {
-		case openStep:
+		case openStep && !exitIsTerminal:
 			finalStatus = "failed"
 			finalError = "opencode stream ended without a terminal signal (step still open at EOF)"
 			noTerminalSignal = true
-		case awaitingContinuation:
+		case awaitingContinuation && !exitIsTerminal:
 			finalStatus = "failed"
 			finalError = "opencode stream ended without a terminal signal (last step required a continuation that never started)"
 			noTerminalSignal = true
@@ -583,13 +613,17 @@ func (b *opencodeBackend) processEvents(r io.Reader, ch chan<- Message) eventRes
 	}
 
 	return eventResult{
-		status:            finalStatus,
-		errMsg:            finalError,
-		output:            output.String(),
-		sessionID:         sessionID,
-		usage:             usage,
-		noTerminalSignal:  noTerminalSignal,
-		sawTerminalSignal: sawStepFinish && !noTerminalSignal,
+		status:           finalStatus,
+		errMsg:           finalError,
+		output:           output.String(),
+		sessionID:        sessionID,
+		usage:            usage,
+		noTerminalSignal: noTerminalSignal,
+		// On 2.x a step_finish proves only that an intermediate step closed —
+		// the final one routinely never reports — so the stream never carries
+		// positive proof of completion there, and a failed prompt write must
+		// keep failing the run (Execute keys that on this field).
+		sawTerminalSignal: sawStepFinish && !noTerminalSignal && !exitIsTerminal,
 	}
 }
 
@@ -829,9 +863,16 @@ type opencodeToolState struct {
 }
 
 // opencodeError represents an error event from opencode.
+//
+// 1.x reports `{"name": …, "data": {"message": …}}`; 2.x reports a flat
+// `{"type": "provider.invalid-output", "message": …}`. Both are decoded so a
+// 2.x failure surfaces its real cause instead of "unknown opencode error".
 type opencodeError struct {
 	Name string           `json:"name,omitempty"`
 	Data *opencodeErrData `json:"data,omitempty"`
+	// 2.x shape.
+	Type string `json:"type,omitempty"`
+	Msg  string `json:"message,omitempty"`
 }
 
 // Message returns the human-readable error message.
@@ -839,10 +880,16 @@ func (e *opencodeError) Message() string {
 	if e.Data != nil && e.Data.Message != "" {
 		return e.Data.Message
 	}
+	if e.Msg != "" {
+		if e.Type != "" {
+			return e.Type + ": " + e.Msg
+		}
+		return e.Msg
+	}
 	if e.Name != "" {
 		return e.Name
 	}
-	return ""
+	return e.Type
 }
 
 type opencodeErrData struct {
