@@ -8462,6 +8462,13 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if env.LocalWorktree != nil && len(env.LocalWorktree.ReplayConflicts) > 0 {
 		promptOptions = append(promptOptions, WithWorktreeReplayConflicts(env.LocalWorktree.ReplayConflicts))
 	}
+	// And it delivers only what ends on its own branch, still containing the
+	// commit it started from. Say so up front: squashing or switching to a PR
+	// branch is ordinary git hygiene the agent would otherwise reach for, and
+	// the daemon cannot record either (#9404).
+	if env.LocalWorktree != nil {
+		promptOptions = append(promptOptions, WithWorktreeBranch(env.LocalWorktree.Branch, env.LocalWorktree.BaseCommit))
+	}
 	prompt := BuildPrompt(task, provider, promptOptions...)
 
 	// Pass task-scoped auth credentials and context so the spawned agent CLI
@@ -8855,6 +8862,17 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		// than being relabeled resumable by a benign-looking second error.
 		result, tools = reconcileFreshRetryResult(firstResult, firstUsage, firstTools, retryResult, retryTools, retryErr)
 	}
+
+	// Worktree mode: if the agent finished with its work somewhere Finalize
+	// will refuse to record — squashed past its baseline, or committed off its
+	// branch — give it one turn to put the work back before failing the task
+	// (#9404). The delivery guard itself is untouched: the repaired state must
+	// pass the very same check in Finalize.
+	if env.LocalWorktree != nil && result.Status == "completed" {
+		if problem := env.LocalWorktree.CheckDelivery(); problem != nil {
+			result, tools = d.repairWorktreeDelivery(ctx, backend, execOpts, result, tools, problem, env, taskLog, task.ID, &msgSeq)
+		}
+	}
 	phaseRecorder.Mark(taskPhaseTurnCompleted)
 
 	elapsed := time.Since(taskStart).Round(time.Second)
@@ -9247,6 +9265,62 @@ func shouldRetryWithFreshSession(result agent.Result, priorSessionID string, too
 //     first result and only merge usage.
 //
 // Usage is merged across both attempts in every branch so billing is complete.
+// worktreeRepairTimeout caps the delivery-repair turn. Putting work back on its
+// branch is a handful of git commands; a turn that has not managed it in this
+// long is not going to, and the task's own budget should not be spent twice.
+const worktreeRepairTimeout = 10 * time.Minute
+
+// repairWorktreeDelivery runs the one follow-up turn that asks the agent to put
+// its work back where Finalize can record it (#9404), then reports what came of
+// it. It never fails the task on its own: whatever state the worktree is in
+// afterwards, Finalize makes the same decision it always made.
+func (d *Daemon) repairWorktreeDelivery(ctx context.Context, backend agent.Backend, execOpts agent.ExecOptions, result agent.Result, tools int32, problem *execenv.DeliveryProblem, env *execenv.Environment, taskLog *slog.Logger, taskID string, msgSeq *atomic.Int32) (agent.Result, int32) {
+	taskLog.Warn("local_directory: worktree delivery would be refused; asking the agent to repair it",
+		"branch", problem.Branch, "base", problem.BaseCommit, "tip", problem.Tip, "reason", problem.Reason)
+
+	opts := execOpts
+	// Continue the conversation when there is one, so the agent knows what it
+	// just did; the prompt is self-contained for the backends that cannot.
+	opts.ResumeSessionID = result.SessionID
+	opts.ResumeContinuityNotice = ""
+	// No additional messages during housekeeping. The repair turn's reply is
+	// discarded (mergeWorktreeRepairResult keeps the task's own), so a
+	// message accepted here would be acknowledged as delivered and its answer
+	// lost. Left unclaimed, the server settles it as turn_ended when the task
+	// ends, so its receipt honestly reads "run ended before delivery" and the
+	// author can resend it (MUL-8139 review).
+	opts.EnableTaskSupplement = false
+	if opts.Timeout <= 0 || opts.Timeout > worktreeRepairTimeout {
+		opts.Timeout = worktreeRepairTimeout
+	}
+	repair, repairTools, repairErr := d.executeAndDrain(ctx, backend, BuildWorktreeDeliveryRepairPrompt(problem), opts, taskLog, taskID, env.CodexHome, msgSeq)
+	if repairErr != nil {
+		taskLog.Error("local_directory: worktree delivery repair turn failed to start", "error", repairErr)
+	} else if remaining := env.LocalWorktree.CheckDelivery(); remaining != nil {
+		taskLog.Error("local_directory: worktree delivery still cannot be recorded after the repair turn",
+			"status", repair.Status, "reason", remaining.Reason)
+	} else {
+		taskLog.Info("local_directory: the agent repaired its worktree delivery", "branch", problem.Branch)
+	}
+	return mergeWorktreeRepairResult(result, tools, repair, repairTools, repairErr)
+}
+
+// mergeWorktreeRepairResult folds the repair turn into the task's result. The
+// task's reply stays the original turn's: the repair turn is housekeeping, and
+// its one-line answer is not what the user asked for. Usage and tool counts
+// add up, and a session the repair turn completed in becomes the resume
+// pointer, since that is now where the conversation ends.
+func mergeWorktreeRepairResult(original agent.Result, originalTools int32, repair agent.Result, repairTools int32, repairErr error) (agent.Result, int32) {
+	if repairErr != nil {
+		return original, originalTools
+	}
+	original.Usage = mergeUsage(original.Usage, repair.Usage)
+	if repair.Status == "completed" && repair.SessionID != "" {
+		original.SessionID = repair.SessionID
+	}
+	return original, originalTools + repairTools
+}
+
 func reconcileFreshRetryResult(first agent.Result, firstUsage map[string]agent.TokenUsage, firstTools int32, retry agent.Result, retryTools int32, retryErr error) (agent.Result, int32) {
 	switch {
 	case retryErr != nil:
