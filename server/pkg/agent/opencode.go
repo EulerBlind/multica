@@ -68,22 +68,81 @@ func opencodeSeparatesReasoning(cfg Config) bool {
 	return err == nil && version.Major == 1 && !version.lessThan(semver{Major: 1, Minor: 3, Patch: 16})
 }
 
-func (b *opencodeBackend) Execute(ctx context.Context, prompt string, opts ExecOptions) (*Session, error) {
-	execPath := b.cfg.ExecutablePath
+func resolveOpenCodeExecutable(cfg Config) (string, error) {
+	execPath := cfg.ExecutablePath
 	if execPath == "" {
 		execPath = "opencode"
 	}
 	resolved, err := exec.LookPath(execPath)
 	if err != nil {
-		return nil, fmt.Errorf("opencode executable not found at %q: %w", execPath, err)
+		return "", fmt.Errorf("opencode executable not found at %q: %w", execPath, err)
 	}
 	if runtime.GOOS == "windows" {
 		if native := resolveOpenCodeNativeFromShim(resolved, os.Stat); native != "" {
-			b.cfg.Logger.Info("opencode resolved to native binary to avoid .cmd shim argv truncation", "shim", resolved, "native", native)
+			cfg.Logger.Info("opencode resolved to native binary to avoid .cmd shim argv truncation", "shim", resolved, "native", native)
 			resolved = native
 		}
 	}
-	execPath = resolved
+	return resolved, nil
+}
+
+func openCodeEnvironment(cfg Config, opts ExecOptions) ([]string, error) {
+	env := buildEnv(cfg.Env)
+	// Keep daemon-mode runs non-interactive without relying on
+	// OPENCODE_PERMISSION. OpenCode deep-merges that env override into user
+	// config while preserving existing key order, so a pre-existing
+	// permission.question key can be followed by a wildcard allow and bypass
+	// the intended question deny. Current OpenCode run sessions inject their
+	// own question/plan deny rules after agent config; this flag only answers
+	// prompts that survive those explicit denies.
+	// Override PWD so the child OpenCode process resolves its discovery root
+	// to the task workdir. cmd.Dir alone is not enough: OpenCode reads PWD
+	// (inherited from the parent daemon) before falling back to process.cwd()
+	// when computing the directory it walks for AGENTS.md / .opencode/skills.
+	// See packages/opencode/src/cli/cmd/run.ts in the upstream source.
+	if opts.Cwd != "" {
+		env = append(env, "PWD="+opts.Cwd)
+	}
+	// Project agent.mcp_config into OpenCode. The channel differs by major:
+	//
+	// On 1.x, OPENCODE_CONFIG_CONTENT — OpenCode's general inline-config
+	// injection mechanism that merges at "local" scope (after the
+	// project-config loop, before remote / managed configs). MCP is the only
+	// field we currently project there; if a future Multica field needs the
+	// same channel it would assemble a combined OpenCode config slice before
+	// the env append. That path deliberately leaves <workdir>/opencode.json
+	// untouched — the workdir is reused across turns for the same
+	// (agent, issue), and any agent- or user-written model / tools /
+	// permission settings in it must survive across runs.
+	//
+	// 2.x stopped honouring that env var, and the only channel it left puts the
+	// credentials in the agent's own working tree, where the agent can commit
+	// them. Such runs are refused rather than started without their servers —
+	// see ErrOpenCodeV2MCPUnsupported.
+	if opencodeUsesV2Contract(cfg) {
+		if err := opencodeCheckMCPSupport(opts.McpConfig); err != nil {
+			return nil, err
+		}
+	} else {
+		mcpContent, err := buildOpenCodeMCPConfigContent(opts.McpConfig)
+		if err != nil {
+			return nil, err
+		}
+		if mcpContent != "" {
+			if _, dup := cfg.Env["OPENCODE_CONFIG_CONTENT"]; dup {
+				cfg.Logger.Warn("agent.custom_env sets OPENCODE_CONFIG_CONTENT but agent.mcp_config takes precedence and overrides it")
+			}
+			env = append(env, "OPENCODE_CONFIG_CONTENT="+mcpContent)
+		}
+	}
+	return env, nil
+}
+
+func (b *opencodeBackend) Execute(ctx context.Context, prompt string, opts ExecOptions) (*Session, error) {
+	execPath, err := resolveOpenCodeExecutable(b.cfg)
+	if err != nil {
+		return nil, err
+	}
 
 	timeout := opts.Timeout
 	runCtx, cancel := runContext(ctx, timeout)
@@ -171,55 +230,10 @@ func (b *opencodeBackend) Execute(ctx context.Context, prompt string, opts ExecO
 		cmd.Dir = opts.Cwd
 	}
 
-	env := buildEnv(b.cfg.Env)
-	// Keep daemon-mode runs non-interactive without relying on
-	// OPENCODE_PERMISSION. OpenCode deep-merges that env override into user
-	// config while preserving existing key order, so a pre-existing
-	// permission.question key can be followed by a wildcard allow and bypass
-	// the intended question deny. Current OpenCode run sessions inject their
-	// own question/plan deny rules after agent config; this flag only answers
-	// prompts that survive those explicit denies.
-	// Override PWD so the child OpenCode process resolves its discovery root
-	// to the task workdir. cmd.Dir alone is not enough: OpenCode reads PWD
-	// (inherited from the parent daemon) before falling back to process.cwd()
-	// when computing the directory it walks for AGENTS.md / .opencode/skills.
-	// See packages/opencode/src/cli/cmd/run.ts in the upstream source.
-	if opts.Cwd != "" {
-		env = append(env, "PWD="+opts.Cwd)
-	}
-	// Project agent.mcp_config into OpenCode. The channel differs by major:
-	//
-	// On 1.x, OPENCODE_CONFIG_CONTENT — OpenCode's general inline-config
-	// injection mechanism that merges at "local" scope (after the
-	// project-config loop, before remote / managed configs). MCP is the only
-	// field we currently project there; if a future Multica field needs the
-	// same channel it would assemble a combined OpenCode config slice before
-	// the env append. That path deliberately leaves <workdir>/opencode.json
-	// untouched — the workdir is reused across turns for the same
-	// (agent, issue), and any agent- or user-written model / tools /
-	// permission settings in it must survive across runs.
-	//
-	// 2.x stopped honouring that env var, and the only channel it left puts the
-	// credentials in the agent's own working tree, where the agent can commit
-	// them. Such runs are refused rather than started without their servers —
-	// see ErrOpenCodeV2MCPUnsupported.
-	if usesV2 {
-		if err := opencodeCheckMCPSupport(opts.McpConfig); err != nil {
-			cancel()
-			return nil, err
-		}
-	} else {
-		mcpContent, err := buildOpenCodeMCPConfigContent(opts.McpConfig)
-		if err != nil {
-			cancel()
-			return nil, err
-		}
-		if mcpContent != "" {
-			if _, dup := b.cfg.Env["OPENCODE_CONFIG_CONTENT"]; dup {
-				b.cfg.Logger.Warn("agent.custom_env sets OPENCODE_CONFIG_CONTENT but agent.mcp_config takes precedence and overrides it")
-			}
-			env = append(env, "OPENCODE_CONFIG_CONTENT="+mcpContent)
-		}
+	env, err := openCodeEnvironment(b.cfg, opts)
+	if err != nil {
+		cancel()
+		return nil, err
 	}
 	cmd.Env = env
 
