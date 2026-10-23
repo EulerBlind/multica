@@ -5664,20 +5664,21 @@ const listNonOwnerAgentsByRuntime = `-- name: ListNonOwnerAgentsByRuntime :many
 SELECT id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters FROM agent
 WHERE runtime_id = $1
   AND owner_id IS DISTINCT FROM $2
+  AND NOT COALESCE(owner_id = ANY($3::uuid[]), false)
 ORDER BY name ASC
 `
 
 type ListNonOwnerAgentsByRuntimeParams struct {
-	RuntimeID      pgtype.UUID `json:"runtime_id"`
-	RuntimeOwnerID pgtype.UUID `json:"runtime_owner_id"`
+	RuntimeID      pgtype.UUID   `json:"runtime_id"`
+	RuntimeOwnerID pgtype.UUID   `json:"runtime_owner_id"`
+	SharedWith     []pgtype.UUID `json:"shared_with"`
 }
 
-// Returns every agent bound to a runtime whose owner differs from its owner,
-// including hidden Builder execution carriers. This is the dependency plan shown before a public
-// runtime is made private: owner-owned agents keep their binding, while every
-// teammate-owned agent loses machine access.
+// Returns bound agents whose owners lose access under the desired shared_with
+// list, including hidden Builder execution carriers. Runtime-owner agents keep
+// their binding.
 func (q *Queries) ListNonOwnerAgentsByRuntime(ctx context.Context, arg ListNonOwnerAgentsByRuntimeParams) ([]Agent, error) {
-	rows, err := q.db.Query(ctx, listNonOwnerAgentsByRuntime, arg.RuntimeID, arg.RuntimeOwnerID)
+	rows, err := q.db.Query(ctx, listNonOwnerAgentsByRuntime, arg.RuntimeID, arg.RuntimeOwnerID, arg.SharedWith)
 	if err != nil {
 		return nil, err
 	}
@@ -5730,19 +5731,21 @@ const listNonOwnerAgentsByRuntimeForUpdate = `-- name: ListNonOwnerAgentsByRunti
 SELECT id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters FROM agent
 WHERE runtime_id = $1
   AND owner_id IS DISTINCT FROM $2
+  AND NOT COALESCE(owner_id = ANY($3::uuid[]), false)
 ORDER BY id
 FOR UPDATE NOWAIT
 `
 
 type ListNonOwnerAgentsByRuntimeForUpdateParams struct {
-	RuntimeID      pgtype.UUID `json:"runtime_id"`
-	RuntimeOwnerID pgtype.UUID `json:"runtime_owner_id"`
+	RuntimeID      pgtype.UUID   `json:"runtime_id"`
+	RuntimeOwnerID pgtype.UUID   `json:"runtime_owner_id"`
+	SharedWith     []pgtype.UUID `json:"shared_with"`
 }
 
 // Runtime access-change locking serializes new bindings. NOWAIT avoids waiting
 // behind a writer that already holds an agent and needs the runtime row.
 func (q *Queries) ListNonOwnerAgentsByRuntimeForUpdate(ctx context.Context, arg ListNonOwnerAgentsByRuntimeForUpdateParams) ([]Agent, error) {
-	rows, err := q.db.Query(ctx, listNonOwnerAgentsByRuntimeForUpdate, arg.RuntimeID, arg.RuntimeOwnerID)
+	rows, err := q.db.Query(ctx, listNonOwnerAgentsByRuntimeForUpdate, arg.RuntimeID, arg.RuntimeOwnerID, arg.SharedWith)
 	if err != nil {
 		return nil, err
 	}
@@ -7761,6 +7764,7 @@ WHERE id = (
                         r.owner_id IS NULL
                         OR a.owner_id IS NULL
                         OR r.owner_id = a.owner_id
+                        OR a.owner_id = ANY(r.shared_with)
                     )
                 )
             )
@@ -7887,6 +7891,7 @@ WHERE id IN (
                         r.owner_id IS NULL
                         OR a.owner_id IS NULL
                         OR r.owner_id = a.owner_id
+                        OR a.owner_id = ANY(r.shared_with)
                     )
                 )
             )

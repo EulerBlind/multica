@@ -852,6 +852,7 @@ func (h *Handler) DaemonRegister(w http.ResponseWriter, r *http.Request) {
 				OwnerID:        prow.OwnerID,
 				LegacyDaemonID: prow.LegacyDaemonID,
 				Visibility:     prow.Visibility,
+				SharedWith:     prow.SharedWith,
 				ProfileID:      prow.ProfileID,
 			}
 		} else {
@@ -905,6 +906,7 @@ func (h *Handler) DaemonRegister(w http.ResponseWriter, r *http.Request) {
 				OwnerID:        row.OwnerID,
 				LegacyDaemonID: row.LegacyDaemonID,
 				Visibility:     row.Visibility,
+				SharedWith:     row.SharedWith,
 				ProfileID:      row.ProfileID,
 			}
 		}
@@ -2464,8 +2466,7 @@ func (h *Handler) finalizeClaimDelivery(
 				Detail: "agent runtime changed before delivery",
 			}
 		}
-		if locked.Visibility == "private" && locked.OwnerID.Valid &&
-			(!agent.OwnerID.Valid || agent.OwnerID != locked.OwnerID) {
+		if locked.Visibility == "private" && locked.OwnerID.Valid && !service.RuntimeAllowsUser(locked, agent.OwnerID) {
 			agentOwnerID = agent.OwnerID
 			return &service.ClaimDeliveryAuthzError{
 				Reason: "error_runtime_access_denied",
@@ -2883,8 +2884,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			"error_agent_runtime_changed", http.StatusConflict, "agent runtime changed before task delivery",
 		)
 	}
-	if runtime.Visibility == "private" && runtime.OwnerID.Valid &&
-		(!agent.OwnerID.Valid || agent.OwnerID != runtime.OwnerID) {
+	if runtime.Visibility == "private" && runtime.OwnerID.Valid && !service.RuntimeAllowsUser(runtime, agent.OwnerID) {
 		userMessage := "This private runtime cannot run the assigned agent because the agent and runtime have different owners."
 		if !agent.OwnerID.Valid {
 			userMessage = "This private runtime cannot run the assigned agent because the agent has no owner."
