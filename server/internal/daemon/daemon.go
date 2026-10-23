@@ -5988,7 +5988,49 @@ func taskRunFailureReason(err error) string {
 	if errors.As(err, &envSetupErr) {
 		return taskfailure.ReasonEnvironmentPrepareFailed.String()
 	}
+	// Local worktree finalization ran after the agent process was already
+	// gone: its error is the daemon's own git bookkeeping, never agent or
+	// provider output. Left to Classify, its text — worktree paths, short
+	// SHAs, branch names — lands in agent_error.*: provider_server_error when
+	// a path segment reads like a 5xx, the agent_error.unknown catchall
+	// otherwise, and either one tells the user to look at the model (#9447).
+	//
+	// Only when it is the whole failure, though. Finalize runs on every exit
+	// path and joins its error onto an earlier one; that earlier one is the
+	// primary cause and keeps its own classification, judged without the
+	// worktree text so a path cannot decide it either.
+	var preserved *worktreePreservedError
+	if errors.As(err, &preserved) {
+		primary := withoutWorktreePreserved(err)
+		if primary == nil {
+			return "local_directory_error"
+		}
+		return taskRunFailureReason(primary)
+	}
 	return taskfailure.Classify(err.Error()).String()
+}
+
+// withoutWorktreePreserved strips the worktree finalization error out of a
+// run error, returning what is left: nil when finalization was the only
+// failure, the remaining errors when runTask joined it onto an earlier one.
+// A single-chain error that wraps it is finalization's alone and yields nil;
+// errors that do not contain it are returned unchanged.
+func withoutWorktreePreserved(err error) error {
+	joined, ok := err.(interface{ Unwrap() []error })
+	if !ok {
+		var preserved *worktreePreservedError
+		if errors.As(err, &preserved) {
+			return nil
+		}
+		return err
+	}
+	var rest []error
+	for _, e := range joined.Unwrap() {
+		if e = withoutWorktreePreserved(e); e != nil {
+			rest = append(rest, e)
+		}
+	}
+	return errors.Join(rest...)
 }
 
 // acquireLocalDirectoryLockIfNeeded inspects the task's project resources for
