@@ -403,6 +403,7 @@ var SupportedTypes = []string{
 	"mcode",
 	"muse",
 	"dim",
+	"devin",
 	"zeroclaw",
 }
 
@@ -507,6 +508,8 @@ func New(agentType string, cfg Config) (Backend, error) {
 		return &qwenpawBackend{cfg: cfg}, nil
 	case "mcode":
 		return &mcodeBackend{cfg: cfg}, nil
+	case "devin":
+		return &devinBackend{cfg: cfg}, nil
 	case "muse":
 		return &museBackend{cfg: cfg}, nil
 	case "zeroclaw":
@@ -556,6 +559,7 @@ var launchHeaders = map[string]string{
 	"qwen":        "qwen -p (stream-json)",
 	"qwenpaw":     "qwenpaw acp",
 	"dim":         "dim acp",
+	"devin":       "devin acp",
 	"mcode":       "mcode acp",
 	"muse":        "muse serve (msp)",
 	"zeroclaw":    "zeroclaw acp",

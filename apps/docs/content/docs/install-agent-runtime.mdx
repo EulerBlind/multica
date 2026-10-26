@@ -47,6 +47,7 @@ Multica currently detects these commands:
 | Reasonix | `reasonix` | [Reasonix](https://github.com/esengine/DeepSeek-Reasonix) |
 | TRAE CLI | `traecli` | [TRAE official site](https://www.trae.cn/) |
 | Dim | `dim` | [DimCode](https://dimagent.cn/en/docs/cli) |
+| Devin CLI | `devin` | [Install Devin CLI](https://docs.devin.ai/cli/quickstart) |
 | ZeroClaw | `zeroclaw` | [ZeroClaw quickstart](https://github.com/zeroclaw-labs/zeroclaw/blob/master/docs/book/src/getting-started/quickstart.md#install) |
 
 "Supported" means Multica can invoke that CLI. It does not mean Multica provides the tool's account, subscription, or model quota for you.
@@ -73,6 +74,7 @@ Below the minimum version, the daemon does not register the corresponding runtim
 | MiniMax Code | 0.1.2 |
 | OpenCode | 1.1.54 |
 | Dim | 0.3.10 |
+| Devin CLI | 3000.3.22 |
 | ZeroClaw | 0.8.0 |
 
 A few tools need extra setup beyond signing in:
@@ -96,6 +98,11 @@ Prefer a bundle your own team publishes or builds: this value is installed into 
 **DSH Desktop.** If you installed DeepSeek Harness Desktop instead of the npm package, the daemon also looks for the CLI shims that app generates, under its own per-user data directory — `~/Library/Application Support/DSH Desktop` on macOS, `%APPDATA%\DSH Desktop` on Windows. On Windows that is roaming application data, not the install directory: the app installs to Program Files or `%LOCALAPPDATA%\Programs`, but the CLI it drives lives beside its other per-user state. The version segment in those paths is a generated id, so the daemon enumerates them and prefers the newest. Nothing else is needed on `PATH` — a generated shim runs the Desktop app's own runtime by absolute path. If DSH Desktop is installed somewhere non-default, point `MULTICA_DSH_PATH` at the shim.
 
 The daemon registers DeepSeek Harness only after `dsh --profile multica --probe` succeeds, and reports the missing profile on `/health` when it does not.
+
+</Accordion>
+<Accordion title="Devin CLI" id="devin-cli">
+
+Devin runs locally through `devin acp`, not cloud Devin VMs. Run `devin auth login` first. Multica checks the binary's version, not ACP's `agentInfo.version` (which can be `0.0.0-dev`).
 
 </Accordion>
 <Accordion title="MiniMax Code" id="minimax-code">

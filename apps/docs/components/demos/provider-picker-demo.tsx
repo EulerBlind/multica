@@ -31,6 +31,7 @@ const TOOLS: { name: string; resume: boolean; mcp: boolean; model: boolean }[] =
   { name: "Kiro CLI", resume: true, mcp: true, model: true },
   { name: "MiniMax Code", resume: false, mcp: true, model: false },
   { name: "Muse Code", resume: true, mcp: false, model: true },
+  { name: "Devin CLI", resume: true, mcp: true, model: true },
   { name: "OpenClaw", resume: true, mcp: true, model: true },
   { name: "OpenCode", resume: true, mcp: true, model: true },
   { name: "Pi", resume: true, mcp: true, model: true },
