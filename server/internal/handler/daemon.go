@@ -3001,6 +3001,12 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		RuntimeConfig:         runtimeConfig,
 		DisabledRuntimeSkills: disabledRuntimeSkillsFor(agent.DisabledRuntimeSkills, runtimeID, runtime.Provider),
 	}
+	// Snapshot the agent's persistent OpenClaw model override for this claim.
+	// It applies to every claim until changed or cleared; later edits do not
+	// affect payloads already delivered to the daemon.
+	if runtime.Provider == "openclaw" {
+		resp.ModelOverride = openclawModelOverride(agent.RuntimeConfig)
+	}
 	// System agents carry a product-owned instruction layer that ships with
 	// this binary instead of being copied into their row at creation. That
 	// is what makes it hot-updatable: editing the embedded file and
