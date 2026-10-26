@@ -3114,6 +3114,11 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		// claim actually hands back — see resumeAnchor there.
 		var commentDeltaScope *commentCountScope
 		var resumeAnchor *resumedRunAnchor
+		// started_at of the run whose session this claim resumes, whatever its
+		// status. Unlike resumeAnchor it is set for failed/cancelled sources
+		// too: a cancelled run's transcript is exactly where an edited comment's
+		// earlier text survives (MUL-8218).
+		var resumedRunStartedAt pgtype.Timestamptz
 
 		// Squad-leader briefing injection: keyed off the task being a
 		// leader-task (is_leader_task) carrying a squad_id — NOT off the
@@ -3280,6 +3285,9 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		// was triggered by a human or by another agent — a signal used by the
 		// harness instructions to avoid mention loops between agents.
 		effectiveTriggerUUID := task.TriggerCommentID
+		// The loaded trigger row, kept for the edit check that runs once the
+		// resumed session is known (MUL-8218).
+		var loadedTrigger *db.Comment
 		if effectiveTriggerUUID.Valid {
 			// Scope by the runtime's workspace so a task row carrying a foreign
 			// comment UUID can never pull another workspace's comment text into
@@ -3290,6 +3298,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 				ID:          effectiveTriggerUUID,
 				WorkspaceID: runtime.WorkspaceID,
 			}); err == nil && !comment.DeletedAt.Valid {
+				loadedTrigger = &comment
 				resp.TriggerCommentContent = comment.Content
 				resp.TriggerThreadID = uuidToString(comment.ID)
 				if comment.ParentID.Valid {
@@ -3402,6 +3411,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 				if !service.ResumeUnsafeFailure(src.FailureReason.String, src.Error.String) &&
 					src.SessionID.Valid && src.RuntimeID == task.RuntimeID && !sourceSessionRetired {
 					resp.PriorSessionID = src.SessionID.String
+					resumedRunStartedAt = src.StartedAt
 					// The deltas date from the run we actually resume, which on
 					// this path is the operator-chosen source — routinely NOT
 					// the newest run on the issue. nil unless that run proved it
@@ -3437,6 +3447,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			}); err == nil && prior.SessionID.Valid {
 				if prior.RuntimeID == task.RuntimeID {
 					resp.PriorSessionID = prior.SessionID.String
+					resumedRunStartedAt = prior.StartedAt
 					// Same rule as the rerun path: date the deltas from the run
 					// this session belongs to. GetLastTaskSession skips poisoned
 					// and retired sessions, so `prior` can be an older run than
@@ -3466,6 +3477,26 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			// parent's workdir, never its session. A force_fresh task with no
 			// retry lineage still resumes nothing.
 			applyFreshSessionRetryWorkdir(*task, &resp, requestHasClientCapability(r, protocol.DaemonCapabilityCheckoutKeepsWorkV1))
+		}
+
+		// MUL-8218: a comment edit cancels the affected run and retriggers from
+		// the edited comment, but the new run resumes that run's session, whose
+		// history still quotes the pre-edit text. Tell the agent which version
+		// is current so it does not keep reasoning from the withdrawn one.
+		// Every comment this run delivers is checked, not only the trigger: an
+		// edited comment can be folded behind a newer, unchanged one.
+		if resp.PriorSessionID != "" {
+			if loadedTrigger != nil && triggerCommentEditedSince(*loadedTrigger, resumedRunStartedAt) {
+				resp.TriggerCommentEditedAt = loadedTrigger.UpdatedAt.Time.UTC().Format(time.RFC3339)
+				resp.TriggerCommentRevision = loadedTrigger.Revision
+			}
+			for i := range resp.CoalescedComments {
+				src := resp.CoalescedComments[i].source
+				if triggerCommentEditedSince(src, resumedRunStartedAt) {
+					resp.CoalescedComments[i].EditedAt = src.UpdatedAt.Time.UTC().Format(time.RFC3339)
+					resp.CoalescedComments[i].Revision = src.Revision
+				}
+			}
 		}
 
 		// Both deltas, now that the resume source is known (MUL-7344).
@@ -5116,6 +5147,7 @@ func (h *Handler) buildCoalescedCommentData(ctx context.Context, workspaceID pgt
 			AuthorType: comment.AuthorType,
 			Content:    comment.Content,
 			CreatedAt:  timestampToString(comment.CreatedAt),
+			source:     comment,
 		}
 		if comment.ParentID.Valid {
 			root, err := h.Queries.GetCommentThreadRootID(ctx, comment.ID)
