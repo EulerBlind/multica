@@ -24,7 +24,7 @@ describe("MetadataSection", () => {
     renderWithI18n(<MetadataSection metadata={metadata} />);
     const header = screen.getByRole("button", { name: "Metadata 4" });
     expect(header).toHaveAttribute("aria-expanded", "false");
-    expect(within(header).getByText("4")).toHaveAttribute("data-slot", "badge");
+    expect(within(header).getByText("4")).toHaveAttribute("data-slot", "section-count");
     expect(screen.queryByText("pipeline_status")).not.toBeInTheDocument();
     fireEvent.click(header);
     expect(screen.getByText("waiting_review")).toBeVisible();

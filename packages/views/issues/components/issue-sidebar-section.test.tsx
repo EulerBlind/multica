@@ -14,7 +14,7 @@ describe("issue sidebar disclosure", () => {
     expect(toggle).not.toHaveBeenCalled();
     expect(screen.queryByRole("button", { name: "References" })).not.toBeInTheDocument();
     expect(screen.queryByText("0")).not.toBeInTheDocument();
-    expect(screen.getByText("References").previousElementSibling).toHaveAttribute("aria-hidden", "true");
+    expect(screen.getByText("References").nextElementSibling).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Add reference" }));
     expect(add).toHaveBeenCalledOnce();
   });
@@ -31,6 +31,8 @@ describe("issue sidebar disclosure", () => {
     }
     render(<Example />);
     const disclosure = screen.getByRole("button", { name: "References 2" });
+    // The disclosure arrow trails the title text instead of leading it.
+    expect(screen.getByText("References").nextElementSibling).toHaveAttribute("aria-hidden", "true");
     fireEvent.click(screen.getByRole("button", { name: "Add reference" }));
     expect(add).toHaveBeenCalledOnce();
     expect(disclosure).toHaveAttribute("aria-expanded", "true");
