@@ -1,11 +1,4 @@
 {
-  "sidebar_settings": {
-    "menu": "{{section}}のオプション",
-    "quick_actions": "クイックアクション設定",
-    "wakeups": "自動起動設定",
-    "properties": "カスタムプロパティ設定",
-    "plugins": "プラグイン設定"
-  },
   "inline_run": {
     "label": "{{name}} の実行",
     "stop": "停止",

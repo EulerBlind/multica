@@ -1,7 +1,6 @@
 import { forwardRef, useEffect, useRef, useState, useImperativeHandle } from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { AgentTask, Attachment, Issue, IssueStatusEntry, Label, TimelineEntry } from "@multica/core/types";
 import { issueKeys } from "@multica/core/issues/queries";
@@ -1169,36 +1168,24 @@ describe("IssueDetail (shared)", () => {
     expect(screen.getByRole("button", { name: "Add property" })).toBeInTheDocument();
   });
 
-  it("opens property management independently while Properties is folded", async () => {
+  it("keeps the Properties header free of add and settings buttons", async () => {
     renderIssueDetail();
     const disclosure = await screen.findByRole("button", { name: "Properties" });
+    const header = disclosure.parentElement!;
+    expect(within(header).queryByRole("button", { name: "Add property" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Properties options" })).not.toBeInTheDocument();
+    // Folding the section hides the inline Add property row with the rest of the grid.
     fireEvent.click(disclosure);
-    fireEvent.click(screen.getByRole("button", { name: "Properties options" }));
-    expect(disclosure).toHaveAttribute("aria-expanded", "false");
-    fireEvent.click(await screen.findByRole("menuitem", { name: "Custom property settings" }));
-    expect(settingsPush).toHaveBeenCalledWith("/test/settings?tab=properties");
+    expect(screen.queryByRole("button", { name: "Add property" })).not.toBeInTheDocument();
   });
 
-  it("returns focus to Add property when the menu is dismissed without selecting a field", async () => {
-    const user = userEvent.setup();
+  it("adds an optional field from the inline Add property row and closes the popover", async () => {
     renderIssueDetail();
-    const trigger = await screen.findByRole("button", { name: "Add property" });
-    await user.click(trigger);
-    expect(await screen.findByRole("menuitem", { name: "Start date" })).toBeVisible();
-    await user.keyboard("{Escape}");
-    await waitFor(() => expect(trigger).toHaveFocus());
-    expect(screen.queryByRole("menuitem", { name: "Start date" })).not.toBeInTheDocument();
-  });
-
-  it("keeps add-property available when folded and expands after choosing a field", async () => {
-    renderIssueDetail();
-    const disclosure = await screen.findByRole("button", { name: "Properties" });
-    fireEvent.click(disclosure);
-    expect(disclosure).toHaveAttribute("aria-expanded", "false");
-    fireEvent.click(screen.getByRole("button", { name: "Add property" }));
-    fireEvent.click(await screen.findByRole("menuitem", { name: "Start date" }));
-    await waitFor(() => expect(disclosure).toHaveAttribute("aria-expanded", "true"));
-    expect(within(disclosure.parentElement!.parentElement!).getAllByText("Start date")[0]).toBeVisible();
+    fireEvent.click(await screen.findByRole("button", { name: "Add property" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Start date" }));
+    // The popover closes (its other options are gone) and the new row is rendered.
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Labels" })).not.toBeInTheDocument());
+    expect(screen.getAllByText("Start date")[0]).toBeVisible();
   });
 
   it("uses a non-resizable layout with the sidebar sheet closed by default on mobile", async () => {

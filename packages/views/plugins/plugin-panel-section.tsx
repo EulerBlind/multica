@@ -8,7 +8,6 @@ import { useFeatureEnabled } from "@multica/core/config";
 import { PLUGINS_V1_FLAG } from "@multica/core/feature-flags";
 import { useT } from "../i18n";
 import { isDesktopShell } from "../platform/local-directory";
-import { IssueSidebarSettingsMenu } from "../issues/components/issue-sidebar-settings-menu";
 import { IssueSidebarSectionHeader } from "../issues/components/issue-sidebar-section";
 import { PluginSurfaceFrame } from "./plugin-surface-frame";
 
@@ -48,8 +47,7 @@ export function PluginPanelSection({ issueId }: { issueId: string }) {
 
   return (
     <section>
-      <IssueSidebarSectionHeader title={t(($) => $.plugins.panels)} open={open} onOpenChange={setOpen} count={panels.length}
-        actions={<IssueSidebarSettingsMenu title={t(($) => $.plugins.panels)} label={t(($) => $.sidebar_settings.plugins)} tab="plugins" />} />
+      <IssueSidebarSectionHeader title={t(($) => $.plugins.panels)} open={open} onOpenChange={setOpen} count={panels.length} />
       <div hidden={!open} className="space-y-2 px-2">
         {panels.map(({ installation, surface }) => (
           <PluginSurfaceFrame

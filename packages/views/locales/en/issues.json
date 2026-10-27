@@ -1,11 +1,4 @@
 {
-  "sidebar_settings": {
-    "menu": "{{section}} options",
-    "quick_actions": "Quick action settings",
-    "wakeups": "Wakeup settings",
-    "properties": "Custom property settings",
-    "plugins": "Plugin settings"
-  },
   "inline_run": {
     "label": "{{name}} run",
     "stop": "Stop",

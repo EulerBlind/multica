@@ -94,17 +94,11 @@ describe("PluginPanelSection", () => {
     expect(srcdoc).not.toContain('child.setAttribute("sandbox", "allow-scripts allow-same-origin")');
   });
 
-  it("opens plugin management without unfolding or replacing the panel", async () => {
+  it("keeps the section header free of settings-only menus", () => {
     data.installed.plugins = [installation()];
     render(<PluginPanelSection issueId="issue-1" />, { wrapper: Wrapper });
-    const frame = screen.getByTitle("Hello Panel — Hello");
-    const disclosure = screen.getByRole("button", { name: "Plugins 1" });
-    fireEvent.click(disclosure);
-    fireEvent.click(screen.getByRole("button", { name: "Plugins options" }));
-    expect(disclosure).toHaveAttribute("aria-expanded", "false");
-    fireEvent.click(await screen.findByRole("menuitem", { name: "Plugin settings" }));
-    expect(settingsPush).toHaveBeenCalledWith("/acme/settings?tab=plugins");
-    expect(screen.getByTitle("Hello Panel — Hello")).toBe(frame);
+    expect(screen.getByRole("button", { name: "Plugins 1" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Plugins options" })).not.toBeInTheDocument();
   });
 
   it("preserves the mounted plugin frame across disclosure changes", () => {

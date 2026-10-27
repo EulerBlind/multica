@@ -1,12 +1,11 @@
 "use client";
 
-import { IssueSidebarSettingsMenu } from "./issue-sidebar-settings-menu";
 import { IssueSidebarSectionHeader } from "./issue-sidebar-section";
 
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { CircleSlash, Plus, RotateCcw } from "lucide-react";
+import { CircleSlash, MoreHorizontal, Plus, RotateCcw, Settings } from "lucide-react";
 import { ApiError } from "@multica/core/api";
 import {
   issuePullRequestsOptions,
@@ -14,14 +13,19 @@ import {
   useLinkIssuePullRequest,
   useSetIssuePRAutoComplete,
 } from "@multica/core/github";
+import { useWorkspacePaths } from "@multica/core/paths";
 import { Button } from "@multica/ui/components/ui/button";
 import { IconButton } from "@multica/ui/components/common/icon-button";
 import {
+  DropdownMenu,
+  DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
+  DropdownMenuTrigger,
 } from "@multica/ui/components/ui/dropdown-menu";
 import { Input } from "@multica/ui/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@multica/ui/components/ui/popover";
+import { useNavigation } from "../../navigation";
 import { useT } from "../../i18n";
 import { PullRequestList } from "./pull-request-list";
 
@@ -183,32 +187,44 @@ function AutoCompleteMenu({
   workspaceEnabled: boolean;
 }) {
   const { t } = useT("issues");
+  const paths = useWorkspacePaths();
+  const navigation = useNavigation();
   const setAutoComplete = useSetIssuePRAutoComplete(issueId);
 
+  // The only section menu left in the sidebar: it carries a real per-issue
+  // action (keep status on merge), not just a link to settings.
   return (
-    <IssueSidebarSettingsMenu
-      title={t(($) => $.detail.section_pull_requests)}
-      triggerLabel={t(($) => $.pr_automation.section_menu)}
-      label={t(($) => $.pr_automation.settings)}
-      tab="code"
-    >
-      {/* When the workspace leaves status alone, the issue switch changes nothing. */}
-      {workspaceEnabled ? (
-        <>
-          <DropdownMenuItem
-            disabled={setAutoComplete.isPending}
-            onClick={() =>
-              setAutoComplete.mutate(!disabled, {
-                onError: () => toast.error(t(($) => $.pr_automation.update_failed)),
-              })
-            }
-          >
-            {disabled ? <RotateCcw /> : <CircleSlash />}
-            {disabled ? t(($) => $.pr_automation.enable) : t(($) => $.pr_automation.disable)}
-          </DropdownMenuItem>
-          <DropdownMenuSeparator />
-        </>
-      ) : null}
-    </IssueSidebarSettingsMenu>
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        render={
+          <IconButton variant="ghost" size="icon-xs" label={t(($) => $.pr_automation.section_menu)}>
+            <MoreHorizontal />
+          </IconButton>
+        }
+      />
+      <DropdownMenuContent align="end" className="w-max max-w-(--available-width)">
+        {/* When the workspace leaves status alone, the issue switch changes nothing. */}
+        {workspaceEnabled ? (
+          <>
+            <DropdownMenuItem
+              disabled={setAutoComplete.isPending}
+              onClick={() =>
+                setAutoComplete.mutate(!disabled, {
+                  onError: () => toast.error(t(($) => $.pr_automation.update_failed)),
+                })
+              }
+            >
+              {disabled ? <RotateCcw /> : <CircleSlash />}
+              {disabled ? t(($) => $.pr_automation.enable) : t(($) => $.pr_automation.disable)}
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+          </>
+        ) : null}
+        <DropdownMenuItem onClick={() => navigation.push(`${paths.settings()}?tab=code`)}>
+          <Settings />
+          {t(($) => $.pr_automation.settings)}
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }

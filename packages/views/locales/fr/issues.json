@@ -1,11 +1,4 @@
 {
-  "sidebar_settings": {
-    "menu": "Options : {{section}}",
-    "quick_actions": "Paramètres des actions rapides",
-    "wakeups": "Paramètres de réveil",
-    "properties": "Paramètres des propriétés personnalisées",
-    "plugins": "Paramètres des plugins"
-  },
   "inline_run": {
     "label": "Exécution de {{name}}",
     "stop": "Arrêter",

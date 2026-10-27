@@ -1,11 +1,4 @@
 {
-  "sidebar_settings": {
-    "menu": "{{section}}选项",
-    "quick_actions": "快捷操作设置",
-    "wakeups": "唤醒设置",
-    "properties": "自定义属性设置",
-    "plugins": "插件设置"
-  },
   "inline_run": {
     "label": "{{name}} 的运行",
     "stop": "停止",

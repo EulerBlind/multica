@@ -1,11 +1,4 @@
 {
-  "sidebar_settings": {
-    "menu": "{{section}} 옵션",
-    "quick_actions": "빠른 작업 설정",
-    "wakeups": "깨우기 설정",
-    "properties": "사용자 지정 속성 설정",
-    "plugins": "플러그인 설정"
-  },
   "inline_run": {
     "label": "{{name}} 실행",
     "stop": "중지",

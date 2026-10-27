@@ -1,6 +1,5 @@
 "use client";
 
-import { IssueSidebarSettingsMenu } from "./issue-sidebar-settings-menu";
 import { IssueSidebarSectionHeader } from "./issue-sidebar-section";
 
 import { useState } from "react";
@@ -429,10 +428,7 @@ export function WakeupsSection({
         title={t(($) => $.wakeups.title)} open={open} onOpenChange={setOpen}
         count={current.length + (!closed ? systemRules.length : 0)}
         collapsible={hasContent}
-        actions={<>
-          {!closed && <WakeupCreate workspaceId={workspaceId} issueId={issueId} defaultAgentId={defaultAgentId} />}
-          <IssueSidebarSettingsMenu title={t(($) => $.wakeups.title)} label={t(($) => $.sidebar_settings.wakeups)} tab="wakeups" />
-        </>}
+        actions={!closed ? <WakeupCreate workspaceId={workspaceId} issueId={issueId} defaultAgentId={defaultAgentId} /> : undefined}
       />
       {open && hasContent && (
         <div className="px-2">

@@ -100,14 +100,10 @@ beforeEach(() => {
   };
 });
 describe("Wakeups sidebar", () => {
-  it("opens workspace defaults from the folded section", async () => {
+  it("keeps the header to the add action without a settings-only menu", () => {
     renderWithI18n(<WakeupsSection issueId="issue" />);
-    const disclosure = screen.getByRole("button", { name: "Wakeups 1" });
-    fireEvent.click(disclosure);
-    fireEvent.click(screen.getByRole("button", { name: "Wakeups options" }));
-    expect(disclosure).toHaveAttribute("aria-expanded", "false");
-    fireEvent.click(await screen.findByRole("menuitem", { name: "Wakeup settings" }));
-    expect(settingsPush).toHaveBeenCalledWith("/acme/settings?tab=wakeups");
+    expect(screen.getByRole("button", { name: "Wakeups 1" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Wakeups options" })).not.toBeInTheDocument();
   });
   it("shows an empty static title with creation available", () => {
     empty = true;

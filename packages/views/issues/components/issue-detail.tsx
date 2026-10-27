@@ -176,7 +176,6 @@ import { PAGE_GUTTER } from "../../layout/page-header";
 import { ProgressRing } from "./progress-ring";
 import { matchesPinyin } from "../../editor/extensions/pinyin-match";
 import { MetadataSection } from "./metadata-section";
-import { IssueSidebarSettingsMenu } from "./issue-sidebar-settings-menu";
 import { IssueSidebarSectionHeader, IssueSidebarStack, IssueSidebarPropertyGrid } from "./issue-sidebar-section";
 import { useT } from "../../i18n";
 import { useIssueDetailScrollRestore } from "../hooks/use-issue-detail-scroll-restore";
@@ -1374,9 +1373,11 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   // picked it from "+ Add property" and we want them dropped straight into
   // edit state). Consumed by the row that matches this key, cleared after.
   const [autoOpenProp, setAutoOpenProp] = useState<OptionalPropKey | null>(null);
-  // Keep the add menu controlled while its action opens the field picker.
-  const [addPropMenuOpen, setAddPropMenuOpen] = useState(false);
-  const propertyPickerOpeningRef = useRef(false);
+  // Controlled state for the "+ Add property" popover. Base UI's Popover
+  // doesn't auto-dismiss on item click (it's not a Menu primitive), so the
+  // popover would stay open behind the newly auto-opened picker — two
+  // popovers stacked. We close it explicitly in `addOptionalProp`.
+  const [addPropPopoverOpen, setAddPropPopoverOpen] = useState(false);
   // Virtuoso's `customScrollParent` wants the HTMLElement, not a ref. A plain
   // `useRef.current` does not trigger a re-render when it populates, so the
   // Virtuoso prop would never receive the element. Callback ref + state fixes
@@ -2581,10 +2582,9 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
         return next;
       });
       setAutoOpenProp(key);
-      // Let the field picker take focus instead of restoring it to the menu trigger.
-      propertyPickerOpeningRef.current = true;
-      setPropertiesOpen(true);
-      setAddPropMenuOpen(false);
+      // Dismiss the "+ Add property" popover so it doesn't sit stacked
+      // behind the picker we're about to auto-open.
+      setAddPropPopoverOpen(false);
     },
     [],
   );
@@ -2596,10 +2596,8 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
       next.add(propertyId);
       return next;
     });
-    propertyPickerOpeningRef.current = true;
     setAutoOpenCustomProp(propertyId);
-    setPropertiesOpen(true);
-    setAddPropMenuOpen(false);
+    setAddPropPopoverOpen(false);
   }, []);
 
   // Clear the auto-open flag after the next render so pickers (which read
@@ -2734,88 +2732,99 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   ) || workspaceProperties.some(
     (property) => !property.archived && !visibleCustomProps.has(property.id) && issue.properties?.[property.id] === undefined,
   );
-  const addPropertyAction = canAddProperty && (
-    <DropdownMenu open={addPropMenuOpen} onOpenChange={(open) => {
-      if (open) propertyPickerOpeningRef.current = false;
-      setAddPropMenuOpen(open);
-    }}>
-      <DropdownMenuTrigger render={<IconButton size="icon-xs" label={t(($) => $.detail.add_property_action)} />}>
-        <Plus />
-      </DropdownMenuTrigger>
-      {/* 388px is the sidebar's 420px resize limit minus its 16px padding on each side. */}
-      <DropdownMenuContent
-        align="end"
-        className="w-max max-w-[min(388px,var(--available-width))]"
-        finalFocus={() => !propertyPickerOpeningRef.current}
-      >
-        {OPTIONAL_PROP_KEYS.filter((k) => !visibleOptionalProps.has(k) && (k !== "stage" || issue.parent_issue_id != null)).map((k) => (
-          <DropdownMenuItem
-            key={k}
-            onClick={() => addOptionalProp(k)}
-          >
-            {k === "priority" && (
-              <PriorityIcon priority="medium" inheritColor className="text-muted-foreground" />
-            )}
-            {k === "stage" && (
-              <Milestone className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-            )}
-            {k === "start_date" && (
-              <CalendarClock className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-            )}
-            {k === "due_date" && (
-              <CalendarDays className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-            )}
-            {k === "labels" && (
-              <Tag className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-            )}
-            <span className="truncate">
-              {k === "priority" && t(($) => $.detail.prop_priority)}
-              {k === "stage" && t(($) => $.detail.prop_stage)}
-              {k === "start_date" && t(($) => $.detail.prop_start_date)}
-              {k === "due_date" && t(($) => $.detail.prop_due_date)}
-              {k === "labels" && t(($) => $.detail.prop_labels)}
-            </span>
-          </DropdownMenuItem>
-        ))}
-        {(() => {
-          const addable = workspaceProperties.filter(
-            (p) =>
-              !p.archived &&
-              !visibleCustomProps.has(p.id) &&
-              issue.properties?.[p.id] === undefined,
-          );
-          if (addable.length === 0) return null;
-          return (
-            <>
-              <div className="my-1 h-px bg-border" />
-              {addable.map((p) => (
-                <DropdownMenuItem
-                  key={p.id}
-                  onClick={() => addCustomProp(p.id)}
-                >
-                  {p.icon ? (
-                    <PropertyIcon property={p} className="size-3.5 text-caption" />
-                  ) : (
-                    <SlidersHorizontal className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                  )}
-                  <span className="line-clamp-2 min-w-0 break-words [overflow-wrap:anywhere]" title={p.name}>{p.name}</span>
-                </DropdownMenuItem>
-              ))}
-            </>
-          );
-        })()}
-      </DropdownMenuContent>
-    </DropdownMenu>
+  // "+ Add property" — an inline row at the bottom of the Properties grid
+  // that opens a Popover listing optional fields not yet displayed. Hidden
+  // once every optional field is on screen.
+  const addPropertyRow = canAddProperty && (
+    <div className="col-span-2 mt-1">
+      <Popover open={addPropPopoverOpen} onOpenChange={setAddPropPopoverOpen}>
+        <PopoverTrigger
+          className="-mx-2 flex items-center gap-1.5 rounded-md px-2 py-1 text-caption text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+        >
+          <Plus className="h-3 w-3 shrink-0" />
+          <span>{t(($) => $.detail.add_property_action)}</span>
+        </PopoverTrigger>
+        {/* Each option leads with the icon the resulting picker uses, so the
+            list reads as a preview of what will show up above. 388px is the
+            sidebar's 420px resize limit minus its 16px padding on each side.
+            Popover (unlike DropdownMenu) has no height bound of its own, so a
+            long property catalog must be capped to the space the positioner
+            reports and scroll inside, or its tail renders off-screen. */}
+        <PopoverContent
+          align="start"
+          data-testid="add-property-popover"
+          className="max-h-(--available-height) w-max min-w-44 max-w-[min(388px,var(--available-width))] overflow-y-auto overscroll-contain p-1"
+        >
+          {OPTIONAL_PROP_KEYS.filter((k) => !visibleOptionalProps.has(k) && (k !== "stage" || issue.parent_issue_id != null)).map((k) => (
+            <button
+              key={k}
+              type="button"
+              onClick={() => addOptionalProp(k)}
+              className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-caption text-foreground transition-colors hover:bg-accent focus-visible:bg-accent focus-visible:outline-none"
+            >
+              {k === "priority" && (
+                <PriorityIcon priority="medium" inheritColor className="text-muted-foreground" />
+              )}
+              {k === "stage" && (
+                <Milestone className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+              )}
+              {k === "start_date" && (
+                <CalendarClock className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+              )}
+              {k === "due_date" && (
+                <CalendarDays className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+              )}
+              {k === "labels" && (
+                <Tag className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+              )}
+              <span className="truncate">
+                {k === "priority" && t(($) => $.detail.prop_priority)}
+                {k === "stage" && t(($) => $.detail.prop_stage)}
+                {k === "start_date" && t(($) => $.detail.prop_start_date)}
+                {k === "due_date" && t(($) => $.detail.prop_due_date)}
+                {k === "labels" && t(($) => $.detail.prop_labels)}
+              </span>
+            </button>
+          ))}
+          {(() => {
+            const addable = workspaceProperties.filter(
+              (p) =>
+                !p.archived &&
+                !visibleCustomProps.has(p.id) &&
+                issue.properties?.[p.id] === undefined,
+            );
+            if (addable.length === 0) return null;
+            return (
+              <>
+                <div className="my-1 h-px bg-border" />
+                {addable.map((p) => (
+                  <button
+                    key={p.id}
+                    type="button"
+                    onClick={() => addCustomProp(p.id)}
+                    className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-caption text-foreground transition-colors hover:bg-accent focus-visible:bg-accent focus-visible:outline-none"
+                  >
+                    {p.icon ? (
+                      <PropertyIcon property={p} className="size-3.5 text-caption" />
+                    ) : (
+                      <SlidersHorizontal className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                    )}
+                    <span className="line-clamp-2 min-w-0 break-words [overflow-wrap:anywhere]" title={p.name}>{p.name}</span>
+                  </button>
+                ))}
+              </>
+            );
+          })()}
+        </PopoverContent>
+      </Popover>
+    </div>
   );
 
   const sidebarContent = (
     <IssueSidebarStack>
       {/* Properties */}
       <div>
-        <IssueSidebarSectionHeader title={t(($) => $.detail.section_properties)} open={propertiesOpen} onOpenChange={setPropertiesOpen} actions={<>
-          {addPropertyAction}
-          <IssueSidebarSettingsMenu title={t(($) => $.detail.section_properties)} label={t(($) => $.sidebar_settings.properties)} tab="properties" />
-        </>} />
+        <IssueSidebarSectionHeader title={t(($) => $.detail.section_properties)} open={propertiesOpen} onOpenChange={setPropertiesOpen}  />
         {propertiesOpen && <IssueSidebarPropertyGrid>
           {/* Core props — always rendered. */}
           <PropRow label={t(($) => $.detail.prop_status)}>
@@ -2921,10 +2930,10 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
               </PropRow>
             ))}
 
+          {addPropertyRow}
         </IssueSidebarPropertyGrid>}
       </div>
 
-      {/* Keep creation available even when the workspace has no active quick actions. */}
       <QuickActionsSection issueId={issue.id} />
 
       <WakeupsSection

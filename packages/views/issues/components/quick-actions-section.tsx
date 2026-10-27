@@ -2,8 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Loader2, Plus, Zap } from "lucide-react";
-import { IconButton } from "@multica/ui/components/common/icon-button";
+import { Loader2, Zap } from "lucide-react";
 import { toast } from "sonner";
 import { dispatchReasonCode } from "@multica/core/api";
 import { useCurrentWorkspace } from "@multica/core/paths";
@@ -22,9 +21,7 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from "@multica/ui/components/ui/tooltip";
 import { cn } from "@multica/ui/lib/utils";
 import { ActorAvatar } from "../../common/actor-avatar";
-import { IssueSidebarSettingsMenu } from "./issue-sidebar-settings-menu";
 import { IssueSidebarSectionHeader } from "./issue-sidebar-section";
-import { CreateQuickActionDialog } from "../../quick-actions/components/quick-action-dialog";
 import { useT } from "../../i18n";
 
 // Quick Actions sidebar section (MUL-5465).
@@ -48,8 +45,6 @@ import { useT } from "../../i18n";
 
 export function QuickActionsSection({ issueId }: { issueId: string }) {
   const { t } = useT("issues");
-  const { t: tSettings } = useT("settings");
-  const [creating, setCreating] = useState(false);
   // Nullable read, not useWorkspaceId(): this section is an enhancement on the
   // sidebar and must degrade to "not rendered" outside a workspace route
   // rather than throwing and taking the whole issue detail down with it.
@@ -64,20 +59,19 @@ export function QuickActionsSection({ issueId }: { issueId: string }) {
   });
   const actions = useMemo(() => data.filter((a) => a.status === "active"), [data]);
 
-  // Keep the creation entry available even before the first action exists.
-  if (!wsId || isLoading) return null;
+  // Quick actions are a workspace-level catalog managed in Settings; the
+  // sidebar only runs them. Nothing configured renders nothing at all — an
+  // empty section header is pure noise. A failed load still renders so the
+  // retry is reachable.
+  if (!wsId || isLoading || (actions.length === 0 && !isError)) return null;
 
   const visible = showAll ? actions : actions.slice(0, QUICK_ACTION_SIDEBAR_LIMIT);
   const hiddenCount = actions.length - visible.length;
 
   return (
     <div>
-      <IssueSidebarSectionHeader title={t(($) => $.detail.section_quick_actions)} count={actions.length} collapsible={actions.length > 0 || isError === true} open={open} onOpenChange={setOpen}
-        actions={<>
-          <IconButton size="icon-xs" label={tSettings(($) => $.quick_actions.create_title)} onClick={() => setCreating(true)}><Plus /></IconButton>
-          <IssueSidebarSettingsMenu title={t(($) => $.detail.section_quick_actions)} label={t(($) => $.sidebar_settings.quick_actions)} tab="quick-actions" />
-        </>} />
-      {open && (actions.length > 0 || isError) ? (
+      <IssueSidebarSectionHeader title={t(($) => $.detail.section_quick_actions)} count={actions.length} open={open} onOpenChange={setOpen} />
+      {open ? (
         <div className="space-y-0.5 px-2">
           {isError && <button type="button" className="flex min-h-8 w-full items-center rounded-md px-2 py-1.5 text-left text-caption text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring" onClick={() => void refetch()}>
             {t(($) => $.detail.section_load_failed_retry)}
@@ -101,8 +95,6 @@ export function QuickActionsSection({ issueId }: { issueId: string }) {
           )}
         </div>
       ) : null}
-
-      {creating && <CreateQuickActionDialog onClose={() => setCreating(false)} />}
 
       {/* One message for every refusal. The person reading this dialog and the
           person who can fix the binding are different people — the clicker's
