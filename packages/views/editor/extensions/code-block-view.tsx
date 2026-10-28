@@ -144,7 +144,7 @@ function CodeBlockView({ node }: NodeViewProps) {
             label={t(($) => $.attachment.reload)}
             onClick={reload}
           >
-            <RotateCw className="h-3.5 w-3.5" />
+            <RotateCw className="size-3.5" />
           </IconButton>
         )}
         {isHtml && (
@@ -156,7 +156,7 @@ function CodeBlockView({ node }: NodeViewProps) {
             label={t(($) => $.code_block.fullscreen)}
             onClick={() => setFullscreen(true)}
           >
-            <Maximize2 className="h-3.5 w-3.5" />
+            <Maximize2 className="size-3.5" />
           </IconButton>
         )}
         <TooltipHint label={t(($) => $.code_block.copy_code)}>

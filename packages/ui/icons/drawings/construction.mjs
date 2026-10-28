@@ -63,7 +63,7 @@ export function gear() {
 }
 
 /**
- * Soft arrowhead whose tip sits at (x, y), pointing `dir` degrees
+ * Arrowhead with a sharp tip at (x, y), pointing `dir` degrees
  * (0 right, 90 down, 180 left, 270 up), `depth` long and `half` wide each side.
  */
 export function head(x, y, dir, depth, half) {
@@ -71,8 +71,7 @@ export function head(x, y, dir, depth, half) {
   const c = Math.cos(a);
   const s = Math.sin(a);
   const P = (u, v) => pt([x + u * c - v * s, y + u * s + v * c]);
-  const t = 0.263 * half;
-  return `<path d="M${P(-depth, -half)}C${P(-depth, -half)} ${P(0, -t)} ${P(0, 0)}C${P(0, t)} ${P(-depth, half)} ${P(-depth, half)}"/>`;
+  return `<path d="M${P(-depth, -half)}L${P(0, 0)} ${P(-depth, half)}"/>`;
 }
 
 export const S = 'fill="currentColor" stroke="none"';

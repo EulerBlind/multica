@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
+  Check,
   Copy,
   Crown,
   Link,
@@ -274,7 +275,7 @@ function MemberRow({
                             </span>
                           </div>
                           {member.role === role && (
-                            <span className="ml-auto text-caption text-muted-foreground">{"✓"}</span>
+                            <Check className="ml-auto size-3.5 text-muted-foreground" />
                           )}
                         </DropdownMenuItem>
                       );

@@ -33,7 +33,9 @@ function FileUploadButton({
     for (const file of files) onSelect(file);
   };
 
-  const iconSize = size === "sm" ? "h-3.5 w-3.5" : "h-4 w-4";
+  // `size-*`, not `h-* w-*`: the icon button's own `[&_svg:not([class*='size-'])]`
+  // rule would otherwise override it (icon-xs forces 12px).
+  const iconSize = size === "sm" ? "size-3.5" : "size-4.5";
   const buttonSize = size === "sm" ? "icon-xs" : "icon-sm";
 
   return (

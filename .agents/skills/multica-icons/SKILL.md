@@ -20,7 +20,7 @@ Every icon in the product is a Multica drawing exported from `@multica/ui/icons`
 
 ## Construction
 
-- **Grid.** 24×24 viewBox, with a 2px round-capped, round-joined stroke from the renderer. Keep geometry inside 2.5–21.5. Most silhouettes span 2.75–21.25.
+- **Grid.** 24×24 viewBox, with a 2px round-capped, round-joined stroke from the renderer. Keep geometry inside 2.5–21.5. Most silhouettes span 2.75–21.25. An object glyph whose longest side is under about 17 renders visibly smaller than its neighbours; only chevrons, `X` and similar marks stay small. Keep parallel strokes at least 3 apart so a gap survives at 14px. A stroke that crosses a shape, such as a pencil's cap line, ends exactly on the outline's centreline; the round cap pokes out if it runs past. When you scale or move a body, recompute these endpoints.
 - **Corners.** Use `shape([[x, y, k], ...])` and `rect(x, y, w, h, k)`, which build continuous-curvature (squircle) corners. Typical `k` values:
   - 5–7 for large containers such as cards, windows and chat bubbles.
   - 2.5–4 for small parts.
@@ -28,7 +28,8 @@ Every icon in the product is a Multica drawing exported from `@multica/ui/icons`
   - 0 for a hard corner, which is rare.
 
   Do not hand-write `a r r` arc corners for rectangles.
-- **Arrowheads and chevrons.** Use `head(x, y, dir, depth, half)` for a soft arrowhead with its tip at (x, y). For chevrons, copy the existing `M… s…` soft curves. Never use sharp polyline arrowheads.
+- **Anything that points.** Chevrons, arrowheads, `< >` brackets, prompts and direction triangles (play, skip) turn at a sharp vertex: a straight polyline such as `M9 6L15 12 9 18`, or `head(x, y, dir, depth, half)` for an arrowhead with its tip at (x, y). Never round the tip with a curve or a `k` corner; the round stroke join is the only softening. The bend in a corner or U-turn arrow's shaft may stay rounded.
+- **Checks.** Use `tick(a, v, b)`: two straight strokes meeting at a tight vertex. Never bow a stroke through a curve where it should turn a corner; a check or any other angular mark drawn that way reads as handwriting.
 - **Dots.** `dot(x, y, r)` with r 1.1–1.5. Use dots only where they carry meaning: info, alert, eyes, status lights.
 - **Polygons and stars.** `polygon(cx, cy, radii, count, k)`.
 - **Reuse parts.** `file()`, `folderBody`, `bubble`, `ring`, `user()`, `link`, `cw` and `ccw` already exist. A variant (`…Off`, `…Plus`, `…X`) is the base drawing plus one stroke. A slash runs `m3 3 18 18`.
