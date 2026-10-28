@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 /**
  * Drives the issue timeline's "Jump to latest" affordance (MUL-8324).
  *
- * `visible` is on while the reader is in the first half of the page and the
+ * `visible` is on while the reader is still near the top of the page and the
  * newest entry is more than one screen away; see `shouldShow`.
  *
  * `jump` drives scrollTop to the bottom directly instead of asking Virtuoso
@@ -98,18 +98,21 @@ export function useJumpToLatest(scrollContainerEl: HTMLElement | null) {
 }
 
 /**
- * Show only while the reader is in the first half of the page: what is left
- * below the viewport must be more than half of the page, and more than one
- * screen. Past the midpoint the latest entry is close enough to scroll to by
- * hand, and short pages never show the button at all.
+ * Show only near the top of the page: the viewport's top edge must still be
+ * within the first `SHOW_WITHIN_TOP_RATIO` of the page, and more than one
+ * screen must be left below. Once the reader has scrolled further on their
+ * own they are reading, not hunting for the latest entry, so the button gets
+ * out of the way; short pages never show it at all.
  */
 function shouldShow(el: HTMLElement) {
-  const remaining = distanceFromBottom(el);
-  return remaining > el.clientHeight && remaining > el.scrollHeight * SHOW_REMAINING_RATIO;
+  return (
+    el.scrollTop <= el.scrollHeight * SHOW_WITHIN_TOP_RATIO &&
+    distanceFromBottom(el) > el.clientHeight
+  );
 }
 
-/** Share of the page that must still be below the viewport for the button to show. */
-const SHOW_REMAINING_RATIO = 0.5;
+/** Share of the page the reader can scroll through before the button hides. */
+const SHOW_WITHIN_TOP_RATIO = 0.2;
 
 function distanceFromBottom(el: HTMLElement) {
   return el.scrollHeight - el.scrollTop - el.clientHeight;

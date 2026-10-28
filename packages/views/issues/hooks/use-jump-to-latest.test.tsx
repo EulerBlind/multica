@@ -77,16 +77,25 @@ describe("useJumpToLatest", () => {
     expect(screen.queryByRole("button", { name: "latest" })).toBeNull();
   });
 
-  it("hides once the reader is past the middle of a long page", () => {
+  it("hides once the reader has scrolled past the top fifth of the page", () => {
     render(<Harness metrics={{ scrollHeight: 4000, clientHeight: 500 }} />);
     const scroller = screen.getByTestId("scroller");
 
-    scroller.scrollTop = 1400; // 2100px left below: more than half the page
+    scroller.scrollTop = 800; // exactly 20% of the page
     fireEvent.scroll(scroller);
     flushFrame();
     expect(screen.getByRole("button", { name: "latest" })).toBeTruthy();
 
-    scroller.scrollTop = 1600; // 1900px left: still several screens, but past the middle
+    scroller.scrollTop = 900; // past 20%, though several screens are still below
+    fireEvent.scroll(scroller);
+    flushFrame();
+    expect(screen.queryByRole("button", { name: "latest" })).toBeNull();
+  });
+
+  it("stays hidden when the view opens restored past the top fifth", () => {
+    render(<Harness metrics={{ scrollHeight: 4000, clientHeight: 500 }} />);
+    const scroller = screen.getByTestId("scroller");
+    scroller.scrollTop = 2000;
     fireEvent.scroll(scroller);
     flushFrame();
     expect(screen.queryByRole("button", { name: "latest" })).toBeNull();
