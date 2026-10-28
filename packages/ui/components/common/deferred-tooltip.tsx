@@ -9,11 +9,12 @@ import {
   type ReactNode,
   type Ref,
 } from "react";
-import { Tooltip, TooltipContent } from "@multica/ui/components/ui/tooltip";
-
-// Matches the ui TooltipProvider default delay so the deferred first-open
-// feels identical to a native tooltip.
-const TOOLTIP_OPEN_DELAY = 200;
+import {
+  Tooltip,
+  TooltipContent,
+  TOOLTIP_OPEN_DELAY,
+  isTooltipInstantPhase,
+} from "@multica/ui/components/ui/tooltip";
 
 /**
  * Tooltip whose machinery mounts only on first hover.
@@ -91,9 +92,14 @@ export function DeferredTooltip({
       (trigger.props.onPointerEnter as ((e: React.PointerEvent) => void) | undefined)?.(e);
       setWarm(true);
       clearTimer();
-      timerRef.current = setTimeout(() => {
-        if (canOpen()) setOpen(true);
-      }, TOOLTIP_OPEN_DELAY);
+      // Same delay as every other tooltip, and the same instant hand-off: when
+      // a tooltip is showing or just closed, open without waiting.
+      timerRef.current = setTimeout(
+        () => {
+          if (canOpen()) setOpen(true);
+        },
+        isTooltipInstantPhase() ? 0 : TOOLTIP_OPEN_DELAY,
+      );
     },
     onPointerLeave: (e: React.PointerEvent) => {
       (trigger.props.onPointerLeave as ((e: React.PointerEvent) => void) | undefined)?.(e);

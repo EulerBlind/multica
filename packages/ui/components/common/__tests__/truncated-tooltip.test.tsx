@@ -19,7 +19,7 @@ async function hover(element: HTMLElement) {
   try {
     fireEvent.pointerEnter(element, { pointerType: "mouse" });
     await act(async () => {
-      vi.advanceTimersByTime(250);
+      vi.advanceTimersByTime(550);
     });
   } finally {
     vi.useRealTimers();

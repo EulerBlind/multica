@@ -424,7 +424,7 @@ describe("IssueRunsDialog", () => {
     vi.useFakeTimers();
     fireEvent.pointerEnter(line, { pointerType: "mouse" });
     act(() => {
-      vi.advanceTimersByTime(250);
+      vi.advanceTimersByTime(550);
     });
     expect(document.querySelector("[data-slot='tooltip-content']")).toHaveTextContent(`“${long}”`);
   });

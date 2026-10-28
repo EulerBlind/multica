@@ -256,7 +256,7 @@ export function PickerItem({
   emptyValue?: boolean;
   /** Design-system tooltip for the row — useful when truncated content needs
    *  the full string, or when the row carries metadata that doesn't fit on
-   *  a single line. Wrapped in a real Tooltip component (200ms delay,
+   *  a single line. Wrapped in a real Tooltip component (shared delay,
    *  styled), not a native `title` attribute. */
   tooltip?: React.ReactNode;
   /** Full text of a row label that may be cut off. Unlike `tooltip`, it only
