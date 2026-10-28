@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef } from "react";
-import { Paperclip } from "lucide-react";
+import { Paperclip } from "@multica/ui/icons";
 import { useTranslation } from "react-i18next";
 import { IconButton } from "@multica/ui/components/common/icon-button";
 import { cn } from "@multica/ui/lib/utils";

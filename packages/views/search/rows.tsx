@@ -1,7 +1,7 @@
 "use client";
 
 import type { ReactNode } from "react";
-import { Check } from "lucide-react";
+import { Check } from "@multica/ui/icons";
 import { Command as CommandPrimitive } from "cmdk";
 import { cn } from "@multica/ui/lib/utils";
 import { ShortcutKeycaps } from "../common/shortcut-keycaps";

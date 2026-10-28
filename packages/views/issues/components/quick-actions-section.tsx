@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Loader2, Zap } from "lucide-react";
+import { Loader2, Zap } from "@multica/ui/icons";
 import { toast } from "sonner";
 import { dispatchReasonCode } from "@multica/core/api";
 import { useCurrentWorkspace } from "@multica/core/paths";

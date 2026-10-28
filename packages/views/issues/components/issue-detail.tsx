@@ -34,7 +34,7 @@ import {
   Unlink,
   Users,
   ArrowDown,
-} from "lucide-react";
+} from "@multica/ui/icons";
 import { BreadcrumbHeader, type BreadcrumbSegment } from "../../layout/breadcrumb-header";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import { Button } from "@multica/ui/components/ui/button";
@@ -209,7 +209,7 @@ export function issueHighlightMementoKey(issueId: string): string {
 // stay one control visually — they occupy the same slot and only differ in
 // what a click does.
 const SUBSCRIPTION_ACTION_CLASS =
-  "text-caption text-muted-foreground hover:text-foreground transition-colors disabled:pointer-events-none disabled:opacity-50";
+  "text-label text-muted-foreground hover:text-foreground transition-colors disabled:pointer-events-none disabled:opacity-50";
 
 function SubscriberPopoverContent({
   members,
@@ -705,7 +705,7 @@ function ActivityBlock({
         <button
           type="button"
           onClick={onToggle}
-          className="flex items-center gap-1.5 text-caption text-muted-foreground transition-colors hover:text-foreground"
+          className="flex items-center gap-1.5 text-label text-muted-foreground transition-colors hover:text-foreground"
         >
           <ChevronRight className="h-3 w-3 shrink-0" />
           <span>{t(($) => $.activity.activity_count, { count })}</span>
@@ -732,7 +732,7 @@ function ActivityBlock({
         <button
           type="button"
           onClick={onToggle}
-          className="flex items-center gap-1.5 text-caption text-muted-foreground transition-colors hover:text-foreground"
+          className="flex items-center gap-1.5 text-label text-muted-foreground transition-colors hover:text-foreground"
         >
           <ChevronDown className="h-3 w-3 shrink-0" />
           <span>{t(($) => $.activity.activity_count, { count: entries.length })}</span>
@@ -742,7 +742,7 @@ function ActivityBlock({
         <button
           type="button"
           onClick={onToggleShowOlder}
-          className="flex items-center gap-1.5 text-caption text-muted-foreground transition-colors hover:text-foreground"
+          className="flex items-center gap-1.5 text-label text-muted-foreground transition-colors hover:text-foreground"
         >
           <ChevronRight className="h-3 w-3 shrink-0" />
           <span>{t(($) => $.activity.show_more_activities, { count: hiddenOlderCount })}</span>
@@ -796,7 +796,7 @@ function ActivityBlock({
 
         const handoff = isStatusChange && !!details.handoff_to_id;
         return (
-          <div key={entry.id} className="text-caption text-muted-foreground">
+          <div key={entry.id} className="text-label text-muted-foreground">
             <div className="flex items-center">
               <div className="mr-2 flex w-4 shrink-0 justify-center">{leadIcon}</div>
               <div className="flex min-w-0 flex-1 items-center gap-1">
@@ -956,7 +956,7 @@ function SubIssueRow({
           href={paths.issueDetail(child.id)}
           className="flex min-w-0 flex-1 items-center gap-2.5"
         >
-          <span className="text-micro text-muted-foreground tabular-nums font-medium shrink-0">
+          <span className="text-caption text-muted-foreground tabular-nums shrink-0">
             {child.identifier}
           </span>
           <IssueAgentActivityIndicator issueId={child.id} />
@@ -2791,7 +2791,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     <div className="col-span-2 mt-1">
       <Popover open={addPropPopoverOpen} onOpenChange={setAddPropPopoverOpen}>
         <PopoverTrigger
-          className="-mx-2 flex items-center gap-1.5 rounded-md px-2 py-1 text-caption text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+          className="-mx-2 flex items-center gap-1.5 rounded-md px-2 py-1 text-label text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
         >
           <Plus className="h-3 w-3 shrink-0" />
           <span>{t(($) => $.detail.add_property_action)}</span>
@@ -3012,7 +3012,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
             <div className="flex items-center gap-0.5 rounded-md px-2 hover:bg-accent/50 transition-colors group">
               <AppLink
                 href={paths.issueDetail(parentIssue.id)}
-                className="flex flex-1 min-w-0 items-center gap-1.5 py-2 text-caption"
+                className="flex flex-1 min-w-0 items-center gap-1.5 py-2 text-label"
               >
                 <StatusIcon
                   status={parentIssue.status}
@@ -3191,7 +3191,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
         ]
       : [];
 
-  const titleSizeClass = isPeek ? "text-title-lg font-semibold" : "text-display-sm font-bold";
+  const titleSizeClass = isPeek ? "text-title-lg font-semibold" : "text-display-sm font-semibold";
 
   const detailContent = (
     <CurrentIssueRenderContextProvider value={currentIssueRenderContext}>
@@ -3357,7 +3357,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                 ref={titleEditorRef}
                 defaultValue={titleConflictDraft ?? issue.title}
                 placeholder={t(($) => $.detail.title_placeholder)}
-                className={cn("w-full leading-snug tracking-tight", titleSizeClass)}
+                className={cn("w-full leading-snug", titleSizeClass)}
                 onReady={titleLazy.onReady}
                 onBlur={(value) => {
                   const trimmed = value.trim();
@@ -3385,7 +3385,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
             <div
               role="button"
               tabIndex={0}
-              className={cn("w-full cursor-text leading-snug tracking-tight", titleSizeClass)}
+              className={cn("w-full cursor-text leading-snug", titleSizeClass)}
               onClick={(e) => {
                 // A drag-selection (copying the title) must not summon the editor.
                 const sel = window.getSelection();
@@ -3457,9 +3457,9 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
           {parentIssue && !issue.source_context && (
             <AppLink
               href={paths.issueDetail(parentIssue.id)}
-              className="mt-2 inline-flex max-w-full items-center gap-1.5 text-caption text-muted-foreground hover:text-foreground transition-colors group/parent"
+              className="mt-2 inline-flex max-w-full items-center gap-1.5 text-label text-muted-foreground hover:text-foreground transition-colors group/parent"
             >
-              <span className="font-medium shrink-0">{t(($) => $.detail.sub_issue_of)}</span>
+              <span className="shrink-0">{t(($) => $.detail.sub_issue_of)}</span>
               <StatusIcon
                   status={parentIssue.status}
                   color={resolveStatusColor(parentIssue.status)}
@@ -3598,7 +3598,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
             <div className="mt-6">
               <button
                 type="button"
-                className="inline-flex items-center gap-1.5 text-caption text-muted-foreground hover:text-foreground transition-colors"
+                className="inline-flex items-center gap-1.5 text-label text-muted-foreground hover:text-foreground transition-colors"
                 onClick={() => actions.openCreateSubIssue()}
               >
                 <Plus className="h-3.5 w-3.5" />

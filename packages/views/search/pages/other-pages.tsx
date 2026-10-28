@@ -2,7 +2,7 @@
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { FolderMinus, Monitor, Moon, SquarePen, Sun } from "lucide-react";
+import { FolderMinus, Monitor, Moon, SquarePen, Sun } from "@multica/ui/icons";
 import { Command as CommandPrimitive } from "cmdk";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";

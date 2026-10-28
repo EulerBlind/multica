@@ -1,7 +1,7 @@
 "use client";
 
 import type { ReactNode } from "react";
-import { FileText, MessageSquare } from "lucide-react";
+import { FileText, MessageSquare } from "@multica/ui/icons";
 import { Command as CommandPrimitive } from "cmdk";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { issueStatusCategory } from "@multica/core/issues";

@@ -11,7 +11,7 @@ import {
   Palette,
   SquarePen,
   Zap,
-} from "lucide-react";
+} from "@multica/ui/icons";
 import { useChatStore } from "@multica/core/chat";
 import type { CommandBarContext } from "@multica/core/command-bar";
 import { useArchiveAllReadInbox, useMarkAllInboxRead } from "@multica/core/inbox/mutations";

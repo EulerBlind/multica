@@ -24,7 +24,7 @@ import {
   Trash2,
   UserPlus,
   Zap,
-} from "lucide-react";
+} from "@multica/ui/icons";
 import { dispatchReasonCode } from "@multica/core/api";
 import { useAuthStore } from "@multica/core/auth";
 import { useWorkspaceId } from "@multica/core/hooks";

@@ -1,7 +1,7 @@
 "use client";
 
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronRight, SearchIcon, Sparkles } from "lucide-react";
+import { ChevronRight, SearchIcon, Sparkles } from "@multica/ui/icons";
 import { Command as CommandPrimitive } from "cmdk";
 import { selectCommandBarContexts, useCommandBarContextStore } from "@multica/core/command-bar";
 import { createShortcutChord } from "@multica/core/shortcuts";

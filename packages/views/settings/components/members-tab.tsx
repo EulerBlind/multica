@@ -15,7 +15,7 @@ import {
   User,
   UserMinus,
   X,
-} from "lucide-react";
+} from "@multica/ui/icons";
 import { ActorAvatar } from "../../common/actor-avatar";
 import { AppLink, useOptionalNavigation } from "../../navigation";
 import type {

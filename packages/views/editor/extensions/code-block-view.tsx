@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { NodeViewWrapper, NodeViewContent } from "@tiptap/react";
 import type { NodeViewProps } from "@tiptap/react";
-import { Code as CodeIcon, Copy, Check, Eye, Maximize2, RotateCw } from "lucide-react";
+import { Code as CodeIcon, Copy, Check, Eye, Maximize2, RotateCw } from "@multica/ui/icons";
 import { IconButton } from "@multica/ui/components/common/icon-button";
 import { TooltipHint } from "@multica/ui/components/common/tooltip-hint";
 import { HtmlPreviewSurface } from "../html-preview-surface";

@@ -70,7 +70,7 @@ import {
   ChevronLeft,
   ListChecks,
   ArrowLeft,
-} from "lucide-react";
+} from "@multica/ui/icons";
 import type { InboxItem } from "@multica/core/types";
 import { Button } from "@multica/ui/components/ui/button";
 import { IconButton } from "@multica/ui/components/common/icon-button";

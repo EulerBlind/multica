@@ -20,7 +20,7 @@ import {
   Trash2,
   Unlink,
   UserMinus,
-} from "lucide-react";
+} from "@multica/ui/icons";
 import type { Issue } from "@multica/core/types";
 import { resolveWorkdirCopyTarget } from "@multica/core/issues";
 import { todayDateOnly, addDaysDateOnly } from "@multica/core/issues/date";

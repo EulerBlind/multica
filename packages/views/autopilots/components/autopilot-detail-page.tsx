@@ -5,7 +5,7 @@ import {
   Zap, Play, Clock, Plus, Trash2, CheckCircle2, XCircle, Loader2, Pencil,
   Ban, ChevronDown, ChevronRight,
   Webhook, RotateCw, Server,
-} from "lucide-react";
+} from "@multica/ui/icons";
 import { useQuery } from "@tanstack/react-query";
 import { autopilotDetailOptions, autopilotRunsOptions, autopilotRunOptions } from "@multica/core/autopilots/queries";
 import { projectDetailOptions } from "@multica/core/projects/queries";

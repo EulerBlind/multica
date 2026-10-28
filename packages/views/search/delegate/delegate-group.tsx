@@ -1,6 +1,6 @@
 "use client";
 
-import { FolderOpen, Network, Sparkles, Users } from "lucide-react";
+import { FolderOpen, Network, Sparkles, Users } from "@multica/ui/icons";
 import { Command as CommandPrimitive } from "cmdk";
 import { createShortcutChord } from "@multica/core/shortcuts";
 import { cn } from "@multica/ui/lib/utils";

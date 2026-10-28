@@ -16,7 +16,7 @@ import {
   Play,
   SquarePen,
   UserPlus,
-} from "lucide-react";
+} from "@multica/ui/icons";
 import { isAgentRuntimeBound } from "@multica/core/agents";
 import { useAuthStore } from "@multica/core/auth";
 import type { CommandBarContext } from "@multica/core/command-bar";

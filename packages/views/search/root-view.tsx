@@ -1,7 +1,7 @@
 "use client";
 
 import type { ReactNode } from "react";
-import { Clock, Loader2, MessageSquare, Sparkles, SquarePen, UserPlus, Zap, type LucideIcon } from "lucide-react";
+import { Clock, Loader2, MessageSquare, Sparkles, SquarePen, UserPlus, Zap, type IconComponent } from "@multica/ui/icons";
 import { Command as CommandPrimitive } from "cmdk";
 import { useQuery } from "@tanstack/react-query";
 import { inboxUnreadSummaryOptions, unreadWorkspaceIds } from "@multica/core/inbox/queries";
@@ -434,7 +434,7 @@ function BestMatchGroups({
   const p = useWorkspacePaths();
 
   let row: ReactNode;
-  const actions: { id: string; label: string; icon: LucideIcon; run?: () => void }[] = [];
+  const actions: { id: string; label: string; icon: IconComponent; run?: () => void }[] = [];
   const subject = target
     ? target.kind === "single"
       ? target.issue.identifier

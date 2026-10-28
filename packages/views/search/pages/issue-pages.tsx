@@ -3,7 +3,7 @@
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { CalendarClock, CalendarX, FolderMinus, Lock, Network, UserMinus, Zap } from "lucide-react";
+import { CalendarClock, CalendarX, FolderMinus, Lock, Network, UserMinus, Zap } from "@multica/ui/icons";
 import { Command as CommandPrimitive } from "cmdk";
 import { dispatchReasonCode } from "@multica/core/api";
 import { useWorkspaceId } from "@multica/core/hooks";
