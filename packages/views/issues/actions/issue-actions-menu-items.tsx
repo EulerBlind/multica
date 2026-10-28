@@ -195,6 +195,13 @@ export function IssueActionsMenuItems({
         <Pencil className="h-3.5 w-3.5" />
         {t(($) => $.actions.rename_issue)}
       </P.Item>
+      {/* Top level rather than under Relations: on a long issue the
+          sub-issues section's own "+" is scrolled far out of reach, and this
+          menu is pinned in the header. */}
+      <P.Item onClick={openCreateSubIssue}>
+        <Plus className="h-3.5 w-3.5" />
+        {t(($) => $.actions.create_sub_issue)}
+      </P.Item>
 
       <P.Separator />
 
@@ -351,14 +358,6 @@ export function IssueActionsMenuItems({
       </P.Item>
 
       <P.Separator />
-
-      {/* Top level rather than under Relations: on a long issue the
-          sub-issues section's own "+" is scrolled far out of reach, and this
-          menu is pinned in the header. */}
-      <P.Item onClick={openCreateSubIssue}>
-        <Plus className="h-3.5 w-3.5" />
-        {t(($) => $.actions.create_sub_issue)}
-      </P.Item>
 
       {/* Relationship actions live under "Relations" — a semantically explicit
           label (unlike the old "More") so the first level tells you what the
