@@ -36,10 +36,10 @@ Every icon in the product is a Multica drawing exported from `@multica/ui/icons`
 
 ## Body and details
 
-- Mark the main closed silhouette with `class="b"` (body). The active sidebar item fills it solid.
+- Mark the main closed silhouette with `class="b"` (body). The active sidebar item fills it at 20% opacity.
   - Any icon that can appear in navigation must have a body. A test enforces this for route icons.
   - Only mark closed shapes. An open arc with a fill closes into a stray chord.
-- Mark every stroke or dot that sits inside the body with `class="k"` (detail). The solid state knocks details out in the background colour; an unmarked detail disappears into the fill.
+- Mark strokes that sit inside the body with `class="k"` (detail).
 - **Detail budget.** At most two inner details. Every detail must carry meaning: a check, a symbol, a divider that defines the object. Drop decorative highlights, extra lines and texture. Icons render at 14px in dense rows, where a third detail turns into noise.
 
 ## Loop
@@ -48,7 +48,7 @@ Every icon in the product is a Multica drawing exported from `@multica/ui/icons`
 2. Run `pnpm --filter @multica/ui icons --preview NewName Neighbour1 Neighbour2`. Open the printed HTML file in a browser and check four things:
    - At 48px: does the geometry sit on the grid, with even optical weight next to its neighbours?
    - At 18px and 14px: is it still legible, or do inner details merge?
-   - In the solid (active) tile: does the silhouette fill, with every inner detail still visible?
+   - In the tinted (active) tile: does only the silhouette fill?
    - Against similar glyphs: can it be told apart at a glance?
 3. Run `pnpm --filter @multica/ui icons` to regenerate `glyphs.ts` and `index.ts`.
 4. Import the new name from `@multica/ui/icons`. Then run `pnpm --filter @multica/ui test` and the typecheck for the package that uses it.

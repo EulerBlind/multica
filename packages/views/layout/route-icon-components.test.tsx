@@ -22,9 +22,9 @@ describe("routeIconForPath", () => {
     expect(routeIconForPath(p.autopilots())).not.toBe(routeIconForPath(p.issues()));
   });
 
-  // The active sidebar item fills the glyph's `icon-body` solid; without one
-  // the active state loses its fill.
-  it.each(Object.entries(ROUTE_ICON_COMPONENTS))("%s marks a body for the solid active state", (_, Icon) => {
+  // The active sidebar item tints the glyph's `icon-body`; without one the
+  // active state loses its fill.
+  it.each(Object.entries(ROUTE_ICON_COMPONENTS))("%s marks a body for the active tint", (_, Icon) => {
     const { container } = render(<Icon />);
     expect(container.querySelector("svg .icon-body")).not.toBeNull();
   });
