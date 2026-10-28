@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/multica-ai/multica/server/pkg/agent"
+	"github.com/multica-ai/multica/server/pkg/httptransport"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 	"github.com/multica-ai/multica/server/pkg/remotemcp"
 )
@@ -124,28 +125,26 @@ type Client struct {
 func NewClient(baseURL string) *Client {
 	return &Client{
 		baseURL:      baseURL,
-		client:       &http.Client{Timeout: 30 * time.Second, Transport: cloneDefaultTransport()},
-		bundleClient: &http.Client{},
+		client:       &http.Client{Timeout: 30 * time.Second, Transport: httptransport.CloneDefault()},
+		bundleClient: &http.Client{Transport: httptransport.CloneDefault()},
 		platform:     "daemon",
 		os:           normalizeGOOS(runtime.GOOS),
 	}
 }
 
-func cloneDefaultTransport() http.RoundTripper {
-	if transport, ok := http.DefaultTransport.(*http.Transport); ok {
-		return transport.Clone()
-	}
-	return http.DefaultTransport
-}
-
-// CloseIdleConnections drops pooled control-plane HTTP connections. The
+// CloseIdleConnections drops pooled daemon HTTP connections. The
 // daemon calls this after repeated heartbeat transport failures so a stale
 // keep-alive socket from a server restart cannot delay recovery indefinitely.
 func (c *Client) CloseIdleConnections() {
-	if c == nil || c.client == nil {
+	if c == nil {
 		return
 	}
-	c.client.CloseIdleConnections()
+	if c.client != nil {
+		c.client.CloseIdleConnections()
+	}
+	if c.bundleClient != nil {
+		c.bundleClient.CloseIdleConnections()
+	}
 }
 
 // normalizeGOOS maps Go's runtime.GOOS values to the protocol vocabulary
