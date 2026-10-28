@@ -136,6 +136,7 @@ import {
   useProjectWorkflow,
 } from "@multica/core/issue-workflows";
 import { useRecentContextStore } from "@multica/core/chat";
+import { useRegisterCommandBarContext } from "../../search/register-context";
 import { useModalStore } from "@multica/core/modals";
 import { issueListOptions, issueDetailOptions, childIssuesOptions, childIssueProgressOptions, issueAttachmentsOptions } from "@multica/core/issues/queries";
 import { projectDetailOptions } from "@multica/core/projects/queries";
@@ -1591,6 +1592,15 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
       });
     }
   }, [issue?.id, wsId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const deletedFallbackPath = onDelete ? undefined : paths.issues();
+  useRegisterCommandBarContext(
+    useMemo(
+      () =>
+        issue ? { kind: "issue", issue, onDeletedFallbackPath: deletedFallbackPath } : null,
+      [issue, deletedFallbackPath],
+    ),
+  );
 
   // Fire `onDelete` once when the issue transitions from loaded to missing.
   // Delete goes through a shell-level modal, so the caller (e.g. inbox) can't

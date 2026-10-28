@@ -124,7 +124,7 @@ export function QuickActionsSection({ issueId }: { issueId: string }) {
  * started. "Added to Lambda's current run" is the truth; "Lambda started
  * working" is not.
  */
-function outcomeMessage(
+export function outcomeMessage(
   outcome: CommentTriggerOutcome | undefined,
   targetName: string,
   t: ReturnType<typeof useT<"issues">>["t"],
