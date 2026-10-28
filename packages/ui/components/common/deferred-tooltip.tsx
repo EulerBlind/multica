@@ -35,17 +35,29 @@ export function DeferredTooltip({
   trigger,
   content,
   side,
+  shouldOpen,
+  openOnFocus = false,
+  contentClassName,
 }: {
   /** The visible trigger element (e.g. an icon button). Cloned with hover
    *  handlers and an anchor ref; its own props are preserved. */
   trigger: ReactElement<Record<string, unknown>>;
   content: ReactNode;
   side?: "top" | "bottom" | "left" | "right";
+  /** Checked against the trigger element when the open delay elapses; the
+   *  tooltip stays closed when it returns false. */
+  shouldOpen?: (el: HTMLElement) => boolean;
+  /** Also open on keyboard focus (and close on blur), gated by the same
+   *  checks as hover. Focus that follows a pointer press stays closed. */
+  openOnFocus?: boolean;
+  contentClassName?: string;
 }) {
   const anchorRef = useRef<HTMLElement | null>(null);
   const [warm, setWarm] = useState(false);
   const [open, setOpen] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Set by a pointer press so the focus it causes is not treated as keyboard focus.
+  const pointerFocusRef = useRef(false);
 
   const clearTimer = () => {
     if (timerRef.current !== null) {
@@ -54,6 +66,19 @@ export function DeferredTooltip({
     }
   };
   useEffect(() => clearTimer, []);
+
+  const canOpen = () => {
+    // A trigger whose own menu/popover is open keeps the tooltip hidden;
+    // plain expand/collapse toggles (aria-expanded without a popup) keep it.
+    const el = anchorRef.current;
+    if (!el) return false;
+    const popupOpen =
+      el.hasAttribute("data-popup-open") ||
+      (el.getAttribute("aria-expanded") === "true" &&
+        (el.getAttribute("aria-haspopup") ?? "false") !== "false");
+    if (popupOpen) return false;
+    return !shouldOpen || shouldOpen(el);
+  };
 
   const triggerRef = trigger.props.ref as Ref<HTMLElement> | undefined;
   const element = cloneElement(trigger, {
@@ -67,15 +92,7 @@ export function DeferredTooltip({
       setWarm(true);
       clearTimer();
       timerRef.current = setTimeout(() => {
-        // A trigger whose own menu/popover is open keeps the tooltip hidden;
-        // plain expand/collapse toggles (aria-expanded without a popup) keep it.
-        const el = anchorRef.current;
-        const popupOpen =
-          el?.hasAttribute("data-popup-open") ||
-          (el?.getAttribute("aria-expanded") === "true" &&
-            (el.getAttribute("aria-haspopup") ?? "false") !== "false");
-        if (popupOpen) return;
-        setOpen(true);
+        if (canOpen()) setOpen(true);
       }, TOOLTIP_OPEN_DELAY);
     },
     onPointerLeave: (e: React.PointerEvent) => {
@@ -85,9 +102,34 @@ export function DeferredTooltip({
     },
     onPointerDown: (e: React.PointerEvent) => {
       (trigger.props.onPointerDown as ((e: React.PointerEvent) => void) | undefined)?.(e);
+      // The press focuses the trigger in this same task; reset afterwards so
+      // a press that moves no focus can't swallow later keyboard focus.
+      pointerFocusRef.current = true;
+      setTimeout(() => {
+        pointerFocusRef.current = false;
+      }, 0);
       clearTimer();
       setOpen(false);
     },
+    ...(openOnFocus
+      ? {
+          onFocus: (e: React.FocusEvent) => {
+            (trigger.props.onFocus as ((e: React.FocusEvent) => void) | undefined)?.(e);
+            const fromPointer = pointerFocusRef.current;
+            pointerFocusRef.current = false;
+            if (fromPointer) return;
+            setWarm(true);
+            clearTimer();
+            if (canOpen()) setOpen(true);
+          },
+          onBlur: (e: React.FocusEvent) => {
+            (trigger.props.onBlur as ((e: React.FocusEvent) => void) | undefined)?.(e);
+            pointerFocusRef.current = false;
+            clearTimer();
+            setOpen(false);
+          },
+        }
+      : {}),
   });
 
   return (
@@ -95,7 +137,7 @@ export function DeferredTooltip({
       {element}
       {warm && (
         <Tooltip open={open} onOpenChange={setOpen}>
-          <TooltipContent side={side} anchor={anchorRef}>
+          <TooltipContent side={side} anchor={anchorRef} className={contentClassName}>
             {content}
           </TooltipContent>
         </Tooltip>

@@ -1,11 +1,7 @@
 "use client";
 
-import { useRef, useState, type ComponentProps, type ReactElement, type ReactNode } from "react";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@multica/ui/components/ui/tooltip";
+import type { ReactElement, ReactNode } from "react";
+import { DeferredTooltip } from "./deferred-tooltip";
 
 /**
  * Whether `node` hides part of its content. Overflow only counts on an axis
@@ -38,13 +34,16 @@ export function isContentTruncated(el: HTMLElement | null): boolean {
 
 /**
  * Tooltip that reveals the full text only when the trigger's text is actually
- * cut off. Built on the shared `Tooltip` (same styling and open delay); right
- * before it would open, it measures the trigger and its descendants and stays
- * closed when nothing overflows. Measuring at open time keeps it correct
- * across resizes and content changes without observers.
+ * cut off. Built on `DeferredTooltip` (shared tooltip styling and open delay):
+ * nothing but the trigger mounts until the first hover, so it is cheap enough
+ * for dense lists, table cells, and column headers. When the open delay
+ * elapses, or the trigger takes keyboard focus, it measures the trigger and its descendants and stays closed when
+ * nothing overflows. Measuring at open time keeps it correct across resizes
+ * and content changes without observers.
  *
  * Use it for tooltips whose content repeats the trigger's own text. Tooltips
- * that add information (icon labels, disabled reasons) keep using `Tooltip`.
+ * that add information (icon labels, disabled reasons, a URL behind a short
+ * label) keep using `Tooltip`.
  */
 function TruncatedTooltip({
   content,
@@ -53,26 +52,23 @@ function TruncatedTooltip({
 }: {
   /** Full text shown when the trigger is truncated. Empty renders the child alone. */
   content: ReactNode;
-  side?: ComponentProps<typeof TooltipContent>["side"];
-  /** The trigger element. Its own props and element type are preserved. */
-  children: ReactElement;
+  side?: "top" | "bottom" | "left" | "right";
+  /** The trigger element. Cloned with hover handlers and a ref; its own props
+   *  and element type are preserved, so it must forward both. */
+  children: ReactElement<Record<string, unknown>>;
 }) {
-  const triggerRef = useRef<HTMLButtonElement | null>(null);
-  const [open, setOpen] = useState(false);
-
   if (content == null || content === false || content === "") return children;
-
   return (
-    <Tooltip
-      open={open}
-      onOpenChange={(next) => {
-        if (next && !isContentTruncated(triggerRef.current)) return;
-        setOpen(next);
-      }}
-    >
-      <TooltipTrigger ref={triggerRef} render={children} />
-      <TooltipContent side={side}>{content}</TooltipContent>
-    </Tooltip>
+    <DeferredTooltip
+      trigger={children}
+      content={content}
+      side={side}
+      shouldOpen={isContentTruncated}
+      openOnFocus
+      // The full text is often one long token (hash, URL, path); let it wrap
+      // inside the max-width bubble instead of spilling out of it.
+      contentClassName="[overflow-wrap:anywhere]"
+    />
   );
 }
 

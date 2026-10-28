@@ -171,6 +171,7 @@ import {
   useViewStateWriter,
 } from "../../platform";
 import { cn } from "@multica/ui/lib/utils";
+import { TruncatedTooltip } from "@multica/ui/components/common/truncated-tooltip";
 import { PAGE_GUTTER } from "../../layout/page-header";
 
 import { ProgressRing } from "./progress-ring";
@@ -2829,7 +2830,9 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                     ) : (
                       <SlidersHorizontal className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                     )}
-                    <span className="line-clamp-2 min-w-0 break-words [overflow-wrap:anywhere]" title={p.name}>{p.name}</span>
+                    <TruncatedTooltip content={p.name}>
+                      <span className="line-clamp-2 min-w-0 break-words [overflow-wrap:anywhere]">{p.name}</span>
+                    </TruncatedTooltip>
                   </button>
                 ))}
               </>
@@ -2938,7 +2941,9 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                 label={
                   <>
                     <PropertyIcon property={p} className="size-3.5 text-caption" />
-                    <span className="line-clamp-2 min-w-0 break-words [overflow-wrap:anywhere]" title={p.name}>{p.name}</span>
+                    <TruncatedTooltip content={p.name}>
+                      <span className="line-clamp-2 min-w-0 break-words [overflow-wrap:anywhere]">{p.name}</span>
+                    </TruncatedTooltip>
                   </>
                 }
               >
