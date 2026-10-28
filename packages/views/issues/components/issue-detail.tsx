@@ -4041,7 +4041,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
       <div className="flex flex-1 min-h-0">
         {detailContent}
         <Sheet open={mobileSidebarOpen} onOpenChange={setMobileSidebarOpen}>
-          <SheetContent side="right" showCloseButton={false} className="w-[320px] overflow-y-auto [scrollbar-gutter:stable] p-4">
+          <SheetContent side="right" showCloseButton={false} className="w-[320px] overflow-y-auto [scrollbar-gutter:stable] px-2 py-4">
             {sidebarContent}
           </SheetContent>
         </Sheet>
@@ -4067,7 +4067,9 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
         panelRef={sidebarRef}
         onResize={handleDesktopSidebarResize}
       >
-        <AnimatedRightSidebar open={desktopSidebarVisualOpen} motionEnabled={desktopSidebarMotionEnabled}>
+        {/* Sections inset their own bodies and rows, so the panel itself only
+            needs a narrow gutter. */}
+        <AnimatedRightSidebar open={desktopSidebarVisualOpen} motionEnabled={desktopSidebarMotionEnabled} contentClassName="px-2 py-4">
           {sidebarContent}
         </AnimatedRightSidebar>
       </ResizablePanel>
