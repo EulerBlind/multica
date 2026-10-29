@@ -12,6 +12,7 @@ It covers:
 - testing and verification
 - full-stack isolated testing (backend + frontend + daemon from source)
 - troubleshooting and destructive reset options
+- the iCode mainline, upstream sync, and commit rules for this fork
 
 ## Contribution Terms
 
@@ -57,6 +58,112 @@ Why:
 
 - the current command flow prefers `.env` over `.env.worktree`
 - if a worktree contains `.env`, it can accidentally point back to the main database
+
+## iCode Mainline and Upstream Sync
+
+This fork is developed on iCode. Upstream Multica changes reach it through
+`euler-main`, never by rebasing the mainline.
+
+| Branch | Remote | Role |
+| --- | --- | --- |
+| `master` | `baidu` (iCode `baidu/multica/multica`) | Team mainline. Every change lands through a Gerrit CR on `refs/for/master`. Never rebase or force-push it. |
+| `main` | `origin` (GitHub `multica-ai/multica`) | Upstream. Read-only for this fork. |
+| `euler-main` | local integration branch | Upstream commits cherry-picked in order, plus fixes for the conflicts they cause. Fast-forward only. |
+
+### Remotes
+
+```bash
+git remote add baidu ssh://<icode-user>@icode.baidu.com:8235/baidu/multica/multica
+git remote -v           # origin = github multica-ai/multica, baidu = iCode
+git fetch origin && git fetch baidu
+```
+
+iCode SSH listens on port 8235 and may need `HostKeyAlgorithms +ssh-rsa` for
+`icode.baidu.com` in `~/.ssh/config`.
+
+### Commit-msg Hook
+
+Gerrit rejects commits without a `Change-Id` trailer. Install the iCode hook
+once per repository; linked worktrees share the main checkout's hooks
+directory, and `--git-path` resolves it from any checkout:
+
+```bash
+hook="$(git rev-parse --git-path hooks)/commit-msg"
+curl -s http://icode.baidu.com/tools/hooks/commit-msg -o "$hook" && chmod +x "$hook"
+# or over SSH:
+# scp -O -p -P 8235 <icode-user>@icode.baidu.com:hooks/commit-msg "$hook"
+```
+
+Commits created before the hook was installed get a `Change-Id` with
+`git commit --amend --no-edit`.
+
+### Commit Identity
+
+Gerrit checks that author and committer match the uploader's iCode account,
+so set the iCode identity per checkout instead of globally. Once the
+repository has more than one working tree, `--worktree` fails unless
+`extensions.worktreeConfig` is enabled:
+
+```bash
+git config extensions.worktreeConfig true    # once per repository
+git config --worktree user.name wangjianghua
+git config --worktree user.email wangjianghua@baidu.com
+git config user.email                        # verify the effective value
+```
+
+See [Git Identity in Managed Task Checkouts](#git-identity-in-managed-task-checkouts)
+for how this interacts with `multica repo checkout`.
+
+### Commit Messages
+
+- The subject starts with the iCafe card id, for example
+  `qf-private-11560 [Fix] renumber InfoFlow origin migrations`.
+- Keep the `Change-Id` trailer the hook adds; amend the same commit to update a CR.
+- Upstream picks keep their original message plus the `-x` trailer.
+
+### Syncing Upstream into `euler-main`
+
+Cherry-picked commits get new hashes, so `euler-main..origin/main` and
+`git cherry` do not show what is still missing. Use the
+`(cherry picked from commit <sha>)` trailers instead:
+
+```bash
+git fetch origin
+git switch -c sync/<card> euler-main
+last=$(git log -1 --format=%B --grep='^(cherry picked from commit ' euler-main \
+  | sed -n 's/^(cherry picked from commit \([0-9a-f]\{40\}\))$/\1/p' | tail -1)
+git rev-list --reverse --no-merges "$last"..origin/main   # commits to pick
+git cherry-pick -x $(git rev-list --reverse --no-merges "$last"..origin/main)
+```
+
+- Upstream `main` is squash-merged. If the range contains a merge commit, stop
+  and decide how to handle it before picking.
+- Resolve text conflicts inside the pick. Fix semantic conflicts that tests
+  or lint expose (migration number collisions, locale parity, moved imports)
+  in separate commits after the picks.
+- Run the checks in [Testing](#testing), then fast-forward `euler-main` to
+  the sync branch.
+
+### Landing `euler-main` on `master`
+
+Squash everything `euler-main` gained since the last sync into one commit on
+top of `baidu/master` and upload it as one CR. Record the `euler-main` hash in
+the message; the next sync starts from it:
+
+```bash
+prev=<Euler-Main hash from the previous sync CR>
+git fetch baidu
+git switch -c sync-master/<card> baidu/master
+git cherry-pick --no-commit "$prev"..euler-main
+git commit -m "<card> [Sync] upstream origin/main into master" \
+  -m "Upstream: <first-sha>..<last-sha>" \
+  -m "Euler-Main: $(git rev-parse euler-main)"
+git push baidu HEAD:refs/for/master
+```
+
+Feature work branches from `baidu/master`. Rebasing your own unmerged branch
+onto `baidu/master` before uploading is fine; rebasing `master` itself is not.
+Changes merged into `master` through CRs are not copied back to `euler-main`.
 
 ## Environment Files
 
