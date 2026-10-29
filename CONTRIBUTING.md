@@ -70,16 +70,53 @@ This fork is developed on iCode. Upstream Multica changes reach it through
 | `main` | `origin` (GitHub `multica-ai/multica`) | Upstream. Read-only for this fork. |
 | `euler-main` | local integration branch | Upstream commits cherry-picked in order, plus fixes for the conflicts they cause. Fast-forward only. |
 
+The first version of `master` is the one exception to the CR rule: the user
+authorized a one-time direct push that imported the full `euler-main` history
+(upstream and fork commits without `Change-Id` trailers) plus the iCode
+template's `ci.yml`. Direct push is closed again afterwards; every later change,
+including upstream syncs, goes through `refs/for/master`.
+
 ### Remotes
+
+Every checkout uses the same names: `baidu` for iCode and `origin` for the
+GitHub upstream. A fresh clone from iCode:
+
+```bash
+git clone -o baidu ssh://<icode-user>@icode.baidu.com:8235/baidu/multica/multica
+cd multica
+git remote add origin https://github.com/multica-ai/multica.git
+```
+
+A checkout cloned with the default remote name (`origin` pointing at iCode):
+
+```bash
+git remote rename origin baidu
+git remote add origin https://github.com/multica-ai/multica.git
+```
+
+A checkout cloned from GitHub (`origin` already upstream):
 
 ```bash
 git remote add baidu ssh://<icode-user>@icode.baidu.com:8235/baidu/multica/multica
-git remote -v           # origin = github multica-ai/multica, baidu = iCode
-git fetch origin && git fetch baidu
+```
+
+Then verify:
+
+```bash
+git remote -v           # baidu = iCode, origin = github multica-ai/multica
+git fetch baidu && git fetch origin
 ```
 
 iCode SSH listens on port 8235 and may need `HostKeyAlgorithms +ssh-rsa` for
-`icode.baidu.com` in `~/.ssh/config`.
+`icode.baidu.com` in `~/.ssh/config`. If SSH fails with
+`Bad owner or permissions on /etc/ssh/ssh_config.d/...` followed by
+`Could not read from remote repository`, the system SSH config is unreadable
+and the error is not an iCode permission problem. Point SSH at your own config:
+
+```bash
+GIT_SSH_COMMAND="ssh -F $HOME/.ssh/config" git clone -o baidu ...   # for the clone
+git config core.sshCommand "ssh -F $HOME/.ssh/config"               # inside the repo
+```
 
 ### Commit-msg Hook
 
@@ -90,7 +127,7 @@ directory, and `--git-path` resolves it from any checkout:
 ```bash
 hook="$(git rev-parse --git-path hooks)/commit-msg"
 curl -s http://icode.baidu.com/tools/hooks/commit-msg -o "$hook" && chmod +x "$hook"
-# or over SSH:
+# or over SSH (add -F "$HOME/.ssh/config" when the system SSH config is unreadable):
 # scp -O -p -P 8235 <icode-user>@icode.baidu.com:hooks/commit-msg "$hook"
 ```
 
@@ -99,8 +136,9 @@ Commits created before the hook was installed get a `Change-Id` with
 
 ### Commit Identity
 
-Gerrit checks that author and committer match the uploader's iCode account,
-so set the iCode identity per checkout instead of globally. Once the
+Gerrit requires the committer to match the uploader's iCode account; the
+author may stay the original author (for example on upstream picks). Set the
+iCode identity per checkout instead of globally. Once the
 repository has more than one working tree, `--worktree` fails unless
 `extensions.worktreeConfig` is enabled:
 
