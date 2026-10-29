@@ -128,6 +128,21 @@
     "error_not_member": "你登入的 Multica 帳號不是當前工作區成員。",
     "error_unknown": "出現未知錯誤。請稍後再試，如反覆失敗請聯絡工作區管理員。"
   },
+  "infoflow_bind": {
+    "page_title": "關聯如流帳號",
+    "redeeming": "正在關聯帳號…",
+    "needs_auth_description": "需要登入 Multica 才能完成關聯。連結中的 token 會將你的如流帳號繫結到當前登入的 Multica 使用者。",
+    "sign_in": "登入",
+    "done_title": "已關聯。",
+    "done_description": "下次在如流向機器人傳送訊息時，會直接送達繫結的智慧體。可以關閉此頁面。",
+    "error_title": "關聯未完成",
+    "error_admin_hint": "如果反覆失敗，請在如流重新向機器人發訊息以獲取新的連結。",
+    "error_missing_token": "連結缺少 token。請在如流重新向機器人發訊息以獲取新的連結。",
+    "error_expired": "連結無效或已過期（有效期 15 分鐘）。請重新向機器人發訊息獲取新的連結。",
+    "error_already_bound": "該如流帳號已關聯到其他 Multica 使用者。帳戶轉移需要先顯式解綁。",
+    "error_not_member": "你登入的 Multica 帳號不是當前工作區成員。",
+    "error_unknown": "出現未知錯誤。請稍後再試，如反覆失敗請聯絡工作區管理員。"
+  },
   "not_found": {
     "title": "頁面未找到",
     "description": "你要查詢的頁面不存在或已被移動。",
