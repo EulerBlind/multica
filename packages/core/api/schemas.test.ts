@@ -74,7 +74,40 @@ import {
   EMPTY_LIST_ISSUE_STATUSES_RESPONSE,
   EMPTY_ISSUE_STATUS_ENTRY,
 } from "./schemas";
+import { IssueUnreadPageSchema, EMPTY_ISSUE_UNREAD_PAGE } from "./schemas";
 import { parseWithFallback } from "./schema";
+
+describe("IssueUnreadPageSchema", () => {
+  const endpoint = "GET /api/issues/unread";
+
+  it("defaults a missing agent_id and next_cursor to null", () => {
+    const parsed = parseWithFallback(
+      {
+        items: [
+          { issue_id: "i-1", outcome: "completed", agent_id: "a-1", created_at: "2026-01-01T00:00:00Z" },
+          { issue_id: "i-2", outcome: "manual", created_at: "2026-01-01T00:00:00Z", extra: true },
+        ],
+      },
+      IssueUnreadPageSchema,
+      EMPTY_ISSUE_UNREAD_PAGE,
+      { endpoint },
+    );
+    expect(parsed.items.map((u) => [u.issue_id, u.agent_id])).toEqual([
+      ["i-1", "a-1"],
+      ["i-2", null],
+    ]);
+    expect(parsed.next_cursor).toBeNull();
+  });
+
+  it("falls back to an empty last page for a malformed body", () => {
+    expect(parseWithFallback({ items: "nope" }, IssueUnreadPageSchema, EMPTY_ISSUE_UNREAD_PAGE, { endpoint })).toEqual(
+      EMPTY_ISSUE_UNREAD_PAGE,
+    );
+    expect(parseWithFallback(null, IssueUnreadPageSchema, EMPTY_ISSUE_UNREAD_PAGE, { endpoint })).toEqual(
+      EMPTY_ISSUE_UNREAD_PAGE,
+    );
+  });
+});
 
 const baseIssue = {
   id: "11111111-1111-1111-1111-111111111111",

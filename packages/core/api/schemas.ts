@@ -58,6 +58,7 @@ import type {
   IssuePullRequestsResponse,
   InboxItem,
   InboxWorkspaceUnread,
+  IssueUnread,
   Label,
   MemberWithUser,
   IssueProperty,
@@ -2762,6 +2763,31 @@ export const InboxUnreadSummarySchema = z.array(
 );
 
 export const EMPTY_INBOX_UNREAD_SUMMARY: InboxWorkspaceUnread[] = [];
+
+// The viewer's unread issues (`/api/issues/unread` GET), behind the sidebar's
+// unread dot. `outcome` stays a string so a future kind still lights the dot;
+// on malformed JSON parseWithFallback returns the empty list, which hides it.
+
+export const IssueUnreadPageSchema = z
+  .object({
+    items: z.array(
+      z
+        .object({
+          issue_id: z.string(),
+          outcome: z.string(),
+          agent_id: z.string().nullish().transform((v) => v ?? null),
+          created_at: z.string(),
+        })
+        .loose(),
+    ),
+    next_cursor: z.string().nullish().transform((v) => v ?? null),
+  })
+  .loose();
+
+export const EMPTY_ISSUE_UNREAD_PAGE: { items: IssueUnread[]; next_cursor: string | null } = {
+  items: [],
+  next_cursor: null,
+};
 
 // Inbox items (`/api/inbox` and `/api/inbox/archived` GET).
 // Lenient per the usual rules: `severity` / `type` / `recipient_type` stay
