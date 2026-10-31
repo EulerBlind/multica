@@ -575,13 +575,17 @@ export function rollbackIssueChange(
 /**
  * Refresh the aggregate projections a single-entity patch cannot recompute:
  * assignee-grouped boards (regrouping is server logic), every Project Gantt
- * (schedule membership + row mirrors), and project metrics when the change
- * could shift per-project counts.
+ * (schedule membership + row mirrors), and project metrics plus sidebar
+ * lists when the change could shift per-project counts.
  */
 export function invalidateIssueDerivatives(
   qc: QueryClient,
   wsId: string,
-  opts: { statusOrProjectChanged: boolean },
+  opts: {
+    statusOrProjectChanged: boolean;
+    /** False when the caller refreshes the sidebar lists it can target. */
+    refreshSidebar?: boolean;
+  },
 ) {
   qc.invalidateQueries({ queryKey: issueKeys.assigneeGroupsAll(wsId) });
   qc.invalidateQueries({ queryKey: issueKeys.myAssigneeGroupsAll(wsId) });
@@ -589,6 +593,35 @@ export function invalidateIssueDerivatives(
   if (opts.statusOrProjectChanged) {
     qc.invalidateQueries({ queryKey: projectKeys.all(wsId) });
   }
+  if (opts.refreshSidebar ?? opts.statusOrProjectChanged) {
+    qc.invalidateQueries({ queryKey: issueKeys.sidebarAll(wsId) });
+  }
+}
+
+/**
+ * Refresh the sidebar lists one issue change can reorder or move it across:
+ * lists showing it, its old and new project's lists, and every view list,
+ * built-in ones included (view membership is a server-side filter the client
+ * cannot re-evaluate).
+ */
+export function invalidateSidebarListsForIssue(
+  qc: QueryClient,
+  wsId: string,
+  issueId: string,
+  projectIds: readonly (string | null | undefined)[],
+) {
+  const projectSources = new Set(projectIds.filter(Boolean).map((id) => `project:${id}`));
+  const prefix = issueKeys.sidebarAll(wsId);
+  qc.invalidateQueries({
+    queryKey: prefix,
+    predicate: (query) => {
+      const source = query.queryKey[prefix.length];
+      if (typeof source !== "string") return false;
+      if (source.startsWith("view:") || source.startsWith("builtin:") || projectSources.has(source)) return true;
+      const data = query.state.data as ListIssuesResponse | undefined;
+      return !!data?.issues?.some((issue) => issue.id === issueId);
+    },
+  });
 }
 
 /** True when any object part of a query key encodes the requested ordering.

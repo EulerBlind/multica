@@ -238,6 +238,22 @@ func (h *Handler) ListIssueViews(w http.ResponseWriter, r *http.Request) {
 	}
 
 	scopeType := r.URL.Query().Get("scope_type")
+	if scopeType == "all" {
+		views, err := h.Queries.ListAllIssueViewsForUser(r.Context(), db.ListAllIssueViewsForUserParams{
+			WorkspaceID: wsUUID,
+			OwnerID:     parseUUID(userID),
+		})
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to list views")
+			return
+		}
+		resp := make([]IssueViewResponse, len(views))
+		for i, v := range views {
+			resp[i] = issueViewToResponse(v)
+		}
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
 	if !contains(validIssueViewScopeTypes, scopeType) {
 		writeError(w, http.StatusBadRequest, "invalid scope_type")
 		return

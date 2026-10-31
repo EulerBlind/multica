@@ -5,6 +5,9 @@ import { api } from "../api";
 import type { IssueViewPreference } from "../api/schemas";
 import type { IssueViewScope } from "./queries";
 
+/** A preference container: a view surface, or the user's sidebar list. */
+export type IssueViewPreferenceScope = IssueViewScope | { scope_type: "sidebar"; scope_id?: null };
+
 export interface ViewBarPrefs {
   hidden: string[];
   order: string[];
@@ -14,11 +17,11 @@ export const EMPTY_VIEW_BAR_PREFS: ViewBarPrefs = { hidden: [], order: [] };
 
 export const issueViewPrefKeys = {
   all: (wsId: string) => ["issue-view-prefs", wsId] as const,
-  scope: (wsId: string, scope: IssueViewScope) =>
+  scope: (wsId: string, scope: IssueViewPreferenceScope) =>
     [...issueViewPrefKeys.all(wsId), scope.scope_type, scope.scope_id ?? null] as const,
 };
 
-export function issueViewPreferenceOptions(wsId: string, scope: IssueViewScope) {
+export function issueViewPreferenceOptions(wsId: string, scope: IssueViewPreferenceScope) {
   return queryOptions({
     queryKey: issueViewPrefKeys.scope(wsId, scope),
     queryFn: () => api.getIssueViewPreference(scope),
@@ -31,7 +34,7 @@ export function issueViewPreferenceOptions(wsId: string, scope: IssueViewScope) 
  * drag-reorder are the canonical optimistic case (locally predictable, same
  * screen, trivial rollback).
  */
-export function useUpdateIssueViewPreference(wsId: string, scope: IssueViewScope) {
+export function useUpdateIssueViewPreference(wsId: string, scope: IssueViewPreferenceScope) {
   const queryClient = useQueryClient();
   const queryKey = issueViewPrefKeys.scope(wsId, scope);
   return useMutation({
@@ -43,7 +46,8 @@ export function useUpdateIssueViewPreference(wsId: string, scope: IssueViewScope
       const optimistic: IssueViewPreference = {
         scope_type: scope.scope_type,
         scope_id: scope.scope_id ?? null,
-        updated_at: previous?.updated_at ?? "",
+        // Non-empty: an empty updated_at means "never saved" to readers.
+        updated_at: previous?.updated_at || new Date().toISOString(),
         prefs: { ...prefs },
       };
       queryClient.setQueryData<IssueViewPreference>(queryKey, optimistic);

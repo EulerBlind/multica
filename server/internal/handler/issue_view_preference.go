@@ -17,7 +17,8 @@ import (
 
 // resolvePreferenceScope validates scope params and backfills scope_id so
 // the composite key never carries NULL: workspace scope uses the workspace
-// id, my scope the user id, project scope the project id (validated).
+// id, my and sidebar scopes the user id, project scope the project id
+// (validated).
 func (h *Handler) resolvePreferenceScope(
 	w http.ResponseWriter, r *http.Request,
 	wsUUID pgtype.UUID, userID string, scopeType, rawScopeID string,
@@ -25,7 +26,7 @@ func (h *Handler) resolvePreferenceScope(
 	switch scopeType {
 	case "workspace":
 		return wsUUID, true
-	case "my":
+	case "my", "sidebar":
 		return parseUUID(userID), true
 	case "project":
 		if rawScopeID == "" {

@@ -96,3 +96,41 @@ func TestIssueViewPreferenceIsPerUser(t *testing.T) {
 		t.Fatalf("another member must not inherit my prefs, got %s", got.Prefs)
 	}
 }
+
+func TestSidebarIssueViewPreferenceIsSeparateFromWorkspace(t *testing.T) {
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(),
+			`DELETE FROM issue_view_preference WHERE workspace_id = $1`, testWorkspaceID)
+	})
+
+	put := func(scopeType string, prefs map[string]any) {
+		t.Helper()
+		w := httptest.NewRecorder()
+		testHandler.PutIssueViewPreference(w, newRequest("PUT", "/api/issue-view-preferences", map[string]any{
+			"scope_type": scopeType,
+			"prefs":      prefs,
+		}))
+		if w.Code != http.StatusOK {
+			t.Fatalf("put %s: expected 200, got %d: %s", scopeType, w.Code, w.Body.String())
+		}
+	}
+	put("sidebar", map[string]any{"order": []string{"builtin:my_issues", "view:abc"}})
+	// An older client writing the workspace doc wholesale must not touch it.
+	put("workspace", map[string]any{"hidden": []string{}})
+
+	w := httptest.NewRecorder()
+	testHandler.GetIssueViewPreference(w, newRequest("GET", "/api/issue-view-preferences?scope_type=sidebar", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("get sidebar: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var got IssueViewPreferenceResponse
+	json.NewDecoder(w.Body).Decode(&got)
+	var round map[string]any
+	json.Unmarshal(got.Prefs, &round)
+	if order, _ := round["order"].([]any); len(order) != 2 || order[1] != "view:abc" {
+		t.Fatalf("sidebar order lost: %s", got.Prefs)
+	}
+	if got.ScopeID == nil || *got.ScopeID != testUserID {
+		t.Fatalf("sidebar scope must be keyed by the user, got %v", got.ScopeID)
+	}
+}
