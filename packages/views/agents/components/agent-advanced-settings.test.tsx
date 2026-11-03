@@ -63,6 +63,9 @@ const slackListingRef = vi.hoisted(() => ({
 const telegramListingRef = vi.hoisted(() => ({
   current: { installations: [] as unknown[], configured: false },
 }));
+const infoflowListingRef = vi.hoisted(() => ({
+  current: { installations: [] as unknown[], configured: false },
+}));
 vi.mock("@multica/core/hooks", () => ({
   useWorkspaceId: () => "ws-1",
 }));
@@ -82,6 +85,12 @@ vi.mock("@multica/core/telegram", () => ({
   telegramInstallationsOptions: () => ({
     queryKey: ["telegram", "installations"],
     queryFn: () => Promise.resolve(telegramListingRef.current),
+  }),
+}));
+vi.mock("@multica/core/infoflow", () => ({
+  infoflowInstallationsOptions: () => ({
+    queryKey: ["infoflow", "installations"],
+    queryFn: () => Promise.resolve(infoflowListingRef.current),
   }),
 }));
 
@@ -184,6 +193,7 @@ beforeEach(() => {
   larkListingRef.current = { installations: [], configured: false };
   slackListingRef.current = { installations: [], configured: false };
   telegramListingRef.current = { installations: [], configured: false };
+  infoflowListingRef.current = { installations: [], configured: false };
 });
 
 describe("AgentAdvancedSettings MCP section visibility", () => {
@@ -224,6 +234,9 @@ describe("AgentAdvancedSettings Integrations section visibility", () => {
     // Slack-only deployment was hiding the section (and its bind entry).
     ["Slack", slackListingRef],
     ["Telegram", telegramListingRef],
+    // Regression: the euler InfoFlow channel must stay in this gate, otherwise
+    // its bind entry is unreachable from the agent detail page.
+    ["InfoFlow", infoflowListingRef],
   ])("shows Integrations once %s is configured", async (_name, ref) => {
     ref.current = { installations: [], configured: true };
     renderDialog([makeRuntime("claude")]);
