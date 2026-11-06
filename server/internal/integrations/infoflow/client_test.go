@@ -2,6 +2,7 @@ package infoflow
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -33,5 +34,30 @@ func TestClientClassifiesAPINotAllowed(t *testing.T) {
 	err := c.postJSON(context.Background(), "/app/message/send", "token", map[string]any{}, nil)
 	if !IsPermissionNotGranted(err) {
 		t.Fatalf("expected permission error, got %v", err)
+	}
+}
+
+// TestClientClassifiesTopLevelErrcode: the SDK's flat failure shape
+// {code:"error",errcode,errmsg} must not be decoded as a success payload.
+func TestClientClassifiesTopLevelErrcode(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":"error","errcode":40070,"errmsg":"boom"}`))
+	}))
+	defer srv.Close()
+	c := NewClient(srv.Client(), srv.URL)
+	var out struct {
+		Content string `json:"content"`
+	}
+	err := c.getJSON(context.Background(), "/im/message/getSingleMsg", "token", nil, &out)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var apiErr *apiError
+	if !errors.As(err, &apiErr) || apiErr.Code != 40070 {
+		t.Fatalf("expected apiError 40070, got %v", err)
+	}
+	if out.Content != "" {
+		t.Fatalf("error envelope must not decode into out, got %q", out.Content)
 	}
 }

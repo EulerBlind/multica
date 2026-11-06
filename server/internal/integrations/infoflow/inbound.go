@@ -9,38 +9,53 @@ import (
 )
 
 type infoflowRaw struct {
-	AppID        any    `json:"agentid"`
-	EventType    string `json:"eventtype"`
-	GroupID      any    `json:"groupid"`
-	MsgID        any    `json:"MsgId"`
-	MsgType      string `json:"MsgType"`
-	FromUserID   string `json:"FromUserId"`
-	FromUserName string `json:"FromUserName"`
-	Content      string `json:"Content"`
-	PicURL       string `json:"PicUrl"`
-	Message      *struct {
-		Header struct {
-			FromUserID   string `json:"fromuserid"`
-			FromUserName string `json:"fromusername"`
-			ToID         any    `json:"toid"`
-			ToType       string `json:"totype"`
-			MsgType      string `json:"msgtype"`
-			MessageID    any    `json:"messageid"`
-		} `json:"header"`
-		Body  []map[string]any `json:"body"`
-		Reply *infoflowQuote   `json:"reply"`
-		Quote *infoflowQuote   `json:"quote"`
-	} `json:"message"`
+	AppID        any                   `json:"agentid"`
+	EventType    string                `json:"eventtype"`
+	GroupID      any                   `json:"groupid"`
+	MsgID        any                   `json:"MsgId"`
+	MsgType      string                `json:"MsgType"`
+	FromUserID   string                `json:"FromUserId"`
+	FromUserName string                `json:"FromUserName"`
+	Content      string                `json:"Content"`
+	PicURL       string                `json:"PicUrl"`
+	Message      *infoflowEventMessage `json:"message"`
+	// Quote is the single-chat shape: some p2p events carry the quoted message
+	// on the event root instead of inside message.quote.
+	Quote *infoflowQuote `json:"quote"`
+	// MulticaQuoteOrigin is the adapter-private lookup result. Keeping it in the
+	// raw payload (and not in InboundMessage) respects the channel boundary: the
+	// shared layer never learns about InfoFlow's getSingleMsg API.
+	MulticaQuoteOrigin *quoteOrigin `json:"multica_quote_origin,omitempty"`
+}
+
+type infoflowEventMessage struct {
+	Header infoflowHeader   `json:"header"`
+	Body   []map[string]any `json:"body"`
+	Reply  *infoflowQuote   `json:"reply"`
+	Quote  *infoflowQuote   `json:"quote"`
+}
+
+type infoflowHeader struct {
+	FromUserID   string `json:"fromuserid"`
+	FromUserName string `json:"fromusername"`
+	ToID         any    `json:"toid"`
+	ToType       string `json:"totype"`
+	MsgType      string `json:"msgtype"`
+	MessageID    any    `json:"messageid"`
 }
 
 // infoflowQuote is a quoted/replied message carried beside the sender's own
 // body. The live gateway puts text in preview and images in a nested body;
-// both shapes are read so a quoted image URL is not dropped.
+// both shapes are read so a quoted image URL is not dropped. Header and
+// FromUserID are the quoted message's author, used to read the full text back
+// from the platform (N79 §5.4); they are additive fields.
 type infoflowQuote struct {
-	MessageID any              `json:"messageid"`
-	Preview   string           `json:"preview"`
-	Content   string           `json:"content"`
-	Body      []map[string]any `json:"body"`
+	MessageID  any              `json:"messageid"`
+	Preview    string           `json:"preview"`
+	Content    string           `json:"content"`
+	Header     infoflowHeader   `json:"header"`
+	FromUserID string           `json:"fromuserid"`
+	Body       []map[string]any `json:"body"`
 }
 
 // inboundFromPayload translates a raw InfoFlow event payload into the
@@ -110,21 +125,64 @@ func normalizePrivatePayload(payload infoflowRaw) (channel.InboundMessage, bool)
 	if senderID == "" {
 		return channel.InboundMessage{}, false
 	}
-	text := flattenPrivateText(payload)
+	own := flattenPrivateText(payload)
+	// The single-chat path used to ignore quotes entirely (N79 H2′); a p2p
+	// quote now renders the same <quoted_message> envelope as a group quote.
+	quoted := flattenQuoted(privateQuotedMessage(payload), payload.MulticaQuoteOrigin)
+	text := own
+	command := own
+	if quoted != "" {
+		text = "<quoted_message>\n" + quoted + "\n</quoted_message>"
+		if strings.TrimSpace(own) != "" {
+			text += "\n\n" + own
+		}
+		if command == "" {
+			// Same rule as the group path: an empty CommandText would make the
+			// quoted body the chat title.
+			command = " "
+		}
+	}
 	if strings.TrimSpace(text) == "" && strings.TrimSpace(payload.PicURL) == "" {
 		return channel.InboundMessage{}, false
 	}
 	msgID := anyString(payload.MsgID)
 	return channel.InboundMessage{
-		EventID:        msgID,
-		MessageID:      msgID,
-		Source:         channel.Source{ChannelType: TypeInfoFlow, ChatID: senderID, ChatType: channel.ChatTypeP2P, SenderID: senderID, SenderStableID: strings.TrimSpace(payload.FromUserName)},
-		Type:           msgTypeFromPrivate(payload),
-		Text:           text,
-		CommandText:    text,
-		AddressedToBot: true,
-		Raw:            mustJSON(payload),
+		EventID:            msgID,
+		MessageID:          msgID,
+		Source:             channel.Source{ChannelType: TypeInfoFlow, ChatID: senderID, ChatType: channel.ChatTypeP2P, SenderID: senderID, SenderStableID: strings.TrimSpace(payload.FromUserName)},
+		Type:               msgTypeFromPrivate(payload),
+		Text:               text,
+		CommandText:        command,
+		HasSelectedContext: quoted != "",
+		ReplyTo:            privateReplyTo(payload),
+		AddressedToBot:     true,
+		Raw:                mustJSON(payload),
 	}, true
+}
+
+// privateQuotedMessage adapts the p2p quote shapes to the group message shape so
+// one renderer serves both paths.
+func privateQuotedMessage(payload infoflowRaw) *infoflowEventMessage {
+	if payload.Message == nil {
+		if payload.Quote == nil {
+			return nil
+		}
+		return &infoflowEventMessage{Quote: payload.Quote}
+	}
+	if payload.Message.Quote == nil && payload.Quote != nil {
+		clone := *payload.Message
+		clone.Quote = payload.Quote
+		return &clone
+	}
+	return payload.Message
+}
+
+func privateReplyTo(payload infoflowRaw) *channel.ReplyCtx {
+	message := privateQuotedMessage(payload)
+	if message == nil {
+		return nil
+	}
+	return groupReplyTo(message)
 }
 
 func normalizeGroupPayload(payload infoflowRaw, botUserID string) (channel.InboundMessage, bool) {
@@ -154,7 +212,7 @@ func normalizeGroupPayloadReasonWithIdentity(payload infoflowRaw, self identityS
 		return channel.InboundMessage{}, dropReasonMissingSender, false
 	}
 	own := flattenGroupText(payload.Message.Body)
-	quoted := flattenQuoted(payload.Message)
+	quoted := flattenQuoted(payload.Message, payload.MulticaQuoteOrigin)
 	text := own
 	if quoted != "" {
 		text = "<quoted_message>\n" + quoted + "\n</quoted_message>"
@@ -428,38 +486,100 @@ func containsAT(body []map[string]any) bool {
 
 // flattenQuoted collects text and image URLs from a quote/reply envelope.
 // The sender's own body is not included; callers prepend this as context.
-func flattenQuoted(message *struct {
-	Header struct {
-		FromUserID   string `json:"fromuserid"`
-		FromUserName string `json:"fromusername"`
-		ToID         any    `json:"toid"`
-		ToType       string `json:"totype"`
-		MsgType      string `json:"msgtype"`
-		MessageID    any    `json:"messageid"`
-	} `json:"header"`
-	Body  []map[string]any `json:"body"`
-	Reply *infoflowQuote   `json:"reply"`
-	Quote *infoflowQuote   `json:"quote"`
-}) string {
+//
+// When origin resolves the quoted message, its full text replaces the preview
+// and the block is labelled (全文/预览/截断). Media lines always come from the
+// inbound envelope: getSingleMsg does not return image or file URLs.
+func flattenQuoted(message *infoflowEventMessage, origin *quoteOrigin) string {
 	if message == nil {
 		return ""
 	}
-	var parts []string
+	var lines []string
+	seen := map[string]bool{}
 	for _, q := range []*infoflowQuote{message.Reply, message.Quote} {
 		if q == nil {
 			continue
 		}
-		if s := strings.TrimSpace(q.Preview); s != "" {
-			parts = append(parts, s)
+		if originAppliesTo(origin, q) {
+			lines = append(lines, renderQuoteWithOrigin(origin, q)...)
+		} else {
+			lines = append(lines, renderQuotePreview(q)...)
 		}
-		if s := strings.TrimSpace(q.Content); s != "" && s != strings.TrimSpace(q.Preview) {
-			parts = append(parts, s)
-		}
-		if nested := flattenGroupText(q.Body); nested != "" {
-			parts = append(parts, nested)
+		for _, bodyLine := range strings.Split(flattenGroupText(q.Body), "\n") {
+			bodyLine = strings.TrimSpace(bodyLine)
+			if bodyLine == "" || seen[bodyLine] {
+				continue
+			}
+			// The full text usually repeats the body's TEXT element; the media
+			// row is the only part the lookup can never supply.
+			if isMediaLine(bodyLine) {
+				seen[bodyLine] = true
+			}
+			lines = append(lines, bodyLine)
 		}
 	}
-	return strings.TrimSpace(strings.Join(parts, "\n"))
+	return strings.TrimSpace(strings.Join(lines, "\n"))
+}
+
+// originAppliesTo keeps a stale origin from labelling a quote it did not come
+// from (a payload may carry both reply and quote).
+func originAppliesTo(origin *quoteOrigin, quote *infoflowQuote) bool {
+	if origin == nil || quote == nil {
+		return false
+	}
+	if origin.QueryID == "" {
+		return true
+	}
+	return origin.QueryID == anyString(quote.MessageID)
+}
+
+// renderQuoteWithOrigin renders the labelled quoted block for a resolved origin.
+func renderQuoteWithOrigin(origin *quoteOrigin, quote *infoflowQuote) []string {
+	switch origin.State {
+	case quoteStateOK:
+		if origin.Text != "" {
+			return []string{quoteTagFull, origin.Text}
+		}
+		if origin.MsgType != "" {
+			return []string{quoteTagFull + "[" + origin.MsgType + "]"}
+		}
+		// The API answered but had no text: keep whatever the inbound preview
+		// carried instead of dropping the quote silently.
+		return []string{quoteTagPreview, quotePreviewText(quote)}
+	case quoteStateNotFound:
+		return []string{quoteTagTruncated, quotePreviewText(quote)}
+	default:
+		return []string{quoteTagPreview, quotePreviewText(quote)}
+	}
+}
+
+// renderQuotePreview keeps the pre-N80 rendering for quotes with no lookup.
+func renderQuotePreview(quote *infoflowQuote) []string {
+	text := quotePreviewText(quote)
+	if text == "" {
+		return nil
+	}
+	return []string{text}
+}
+
+func quotePreviewText(quote *infoflowQuote) string {
+	if quote == nil {
+		return ""
+	}
+	var parts []string
+	if s := strings.TrimSpace(quote.Preview); s != "" {
+		parts = append(parts, s)
+	}
+	if s := strings.TrimSpace(quote.Content); s != "" && s != strings.TrimSpace(quote.Preview) {
+		parts = append(parts, s)
+	}
+	return strings.Join(parts, "\n")
+}
+
+// isMediaLine recognizes the IMAGE/FILE rows produced by flattenGroupText so a
+// URL carried by both the preview and the body is only emitted once.
+func isMediaLine(line string) bool {
+	return strings.HasPrefix(line, "[IMAGE]") || strings.HasPrefix(line, "[FILE:")
 }
 
 func bodyItems(v any) []map[string]any {
@@ -479,19 +599,7 @@ func bodyItems(v any) []map[string]any {
 	}
 }
 
-func groupReplyTo(message *struct {
-	Header struct {
-		FromUserID   string `json:"fromuserid"`
-		FromUserName string `json:"fromusername"`
-		ToID         any    `json:"toid"`
-		ToType       string `json:"totype"`
-		MsgType      string `json:"msgtype"`
-		MessageID    any    `json:"messageid"`
-	} `json:"header"`
-	Body  []map[string]any `json:"body"`
-	Reply *infoflowQuote   `json:"reply"`
-	Quote *infoflowQuote   `json:"quote"`
-}) *channel.ReplyCtx {
+func groupReplyTo(message *infoflowEventMessage) *channel.ReplyCtx {
 	if message == nil {
 		return nil
 	}

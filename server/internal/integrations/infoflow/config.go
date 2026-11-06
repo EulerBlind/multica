@@ -18,6 +18,10 @@
 //     (single chat). The single-chat API is currently gated by an application
 //     permission (errcode 40000 "Api not allowed"); the adapter classifies that
 //     as a permission error rather than a retryable transport failure.
+//   - Quoted messages: the inbound envelope only carries a rendered preview. The
+//     quoted text's full body is read back with GET /im/message/getSingleMsg
+//     (msgId + receiverType 2 group / 7 single chat + receiverId). Its response
+//     has no image or file URL, so quoted media still comes from reply.body.
 package infoflow
 
 import (

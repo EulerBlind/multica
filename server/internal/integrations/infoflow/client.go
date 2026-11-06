@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -118,10 +120,14 @@ type accessTokenResponse struct {
 }
 
 // businessEnvelope is the shared {code, data:{errcode, errmsg}} shape the
-// InfoFlow robot APIs return for business-level failures inside HTTP 200.
+// InfoFlow robot APIs return for business-level failures inside HTTP 200. The
+// official SDK also emits a flat failure shape {code:"error", errcode, errmsg},
+// so the top-level errcode is inspected as well (N79 §3.1).
 type businessEnvelope struct {
-	Code string          `json:"code"`
-	Data json.RawMessage `json:"data"`
+	Code    string          `json:"code"`
+	Errcode int             `json:"errcode"`
+	Errmsg  string          `json:"errmsg"`
+	Data    json.RawMessage `json:"data"`
 }
 
 // Client owns the HTTP transport plus a per-AppKey access-token cache shared by
@@ -247,7 +253,45 @@ func (c *Client) postJSON(ctx context.Context, path, token string, body any, out
 	}
 	req.Header.Set("Content-Type", "application/json; charset=utf-8")
 	req.Header.Set("Authorization", "Bearer-"+token)
+	return c.doJSON(req, path, out)
+}
 
+// getJSON issues an authenticated GET and decodes the business envelope.
+func (c *Client) getJSON(ctx context.Context, path, token string, query url.Values, out any) error {
+	target := c.apiBase + path
+	if len(query) > 0 {
+		target += "?" + query.Encode()
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return fmt.Errorf("infoflow: build %s request: %w", path, err)
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "Bearer-"+token)
+	return c.doJSON(req, path, out)
+}
+
+// getMessage reads one message back by id. It is the only way to recover the
+// full text of a quoted message: the inbound envelope only carries a rendered
+// preview, and the returned detail has no body/media URLs.
+func (c *Client) getMessage(ctx context.Context, token string, q quoteQuery) (quoteMessageDetail, error) {
+	query := url.Values{}
+	query.Set("fromId", q.FromID)
+	query.Set("receiverId", q.ReceiverID)
+	query.Set("receiverType", strconv.Itoa(q.ReceiverType))
+	query.Set("msgId", q.MsgID)
+	var resp struct {
+		Data quoteMessageDetail `json:"data"`
+	}
+	if err := c.getJSON(ctx, "/im/message/getSingleMsg", token, query, &resp); err != nil {
+		return quoteMessageDetail{}, err
+	}
+	return resp.Data, nil
+}
+
+// doJSON performs the request and classifies transport, envelope and business
+// failures before decoding a success payload into out.
+func (c *Client) doJSON(req *http.Request, path string, out any) error {
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("infoflow: %s request: %w", path, err)
@@ -279,9 +323,17 @@ func (c *Client) postJSON(ctx context.Context, path, token string, body any, out
 	return nil
 }
 
-// decodeBusinessError inspects the nested data.errcode the InfoFlow robot APIs
-// return for business failures (the top-level code stays "ok").
+// decodeBusinessError inspects the business-level error the InfoFlow APIs return
+// inside HTTP 200: either the top-level {code:"error",errcode,errmsg} shape or
+// the nested data.errcode shape (the top-level code then stays "ok").
 func decodeBusinessError(path string, envelope businessEnvelope) error {
+	if envelope.Errcode != 0 {
+		return classifyBusinessError(path, envelope.Errcode, envelope.Errmsg)
+	}
+	if strings.EqualFold(strings.TrimSpace(envelope.Code), "error") {
+		// A failure envelope with no errcode: still not a success payload.
+		return &apiError{Path: path, StatusCode: http.StatusOK, Message: "code=error"}
+	}
 	if len(envelope.Data) == 0 {
 		return nil
 	}
@@ -296,11 +348,15 @@ func decodeBusinessError(path string, envelope businessEnvelope) error {
 	if inner.Errcode == 0 {
 		return nil
 	}
-	err := &apiError{Path: path, StatusCode: http.StatusOK, Code: inner.Errcode, Message: inner.Errmsg}
-	if inner.Errcode == errCodeAPINotAllowed && inner.Errmsg == "Api not allowed" {
+	return classifyBusinessError(path, inner.Errcode, inner.Errmsg)
+}
+
+func classifyBusinessError(path string, errcode int, errmsg string) error {
+	err := &apiError{Path: path, StatusCode: http.StatusOK, Code: errcode, Message: errmsg}
+	if errcode == errCodeAPINotAllowed && errmsg == "Api not allowed" {
 		return fmt.Errorf("%w: %v", ErrPermissionNotGranted, err)
 	}
-	if inner.Errcode == errCodeBodyTooLong || inner.Errcode == errCodeTextTooLong {
+	if errcode == errCodeBodyTooLong || errcode == errCodeTextTooLong {
 		return fmt.Errorf("%w: %v", ErrMessageTooLong, err)
 	}
 	return err

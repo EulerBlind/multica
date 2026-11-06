@@ -25,6 +25,7 @@ type infoflowChannel struct {
 	botMentionNames []string
 	client          *Client
 	groupIdentity   *groupIdentityResolver
+	quoteEnricher   *quoteEnricher
 	handler         channel.InboundHandler
 	logger          *slog.Logger
 }
@@ -81,42 +82,99 @@ func (c *infoflowChannel) Connect(ctx context.Context) error {
 		appKey:     c.appKey,
 		appSecret:  c.appSecret,
 		logger:     c.logger,
-		onFrame: func(ctx context.Context, frame Frame) error {
-			raw, err := parseFramePayload(frame)
-			if err != nil {
-				c.logger.InfoContext(ctx, "infoflow: dropped non-payload frame", "error", err)
-				return nil
-			}
-			// Enrich the self-identity set with the group-scoped identity before
-			// normalization: InfoFlow's group AT element usually carries only
-			// the robot's DISPLAY NAME, which the configured id cannot match.
-			// Extra tokens are harmless for p2p (mention checking is skipped).
-			self := newIdentitySet(c.botUserID, c.botMentionNames)
-			if groupID := groupIDFromRaw(raw); groupID != "" && c.groupIdentity != nil {
-				if tokens, _ := c.groupIdentity.lookup(ctx, groupID); len(tokens) > 0 {
-					self = self.withResolved(tokens)
-				}
-			}
-			msg, dropReason, ok := inboundFromPayloadReasonWithIdentity(raw, c.appID, self)
-			if !ok {
-				// The payload could not even be turned into a message (missing
-				// sender/content/group id, or malformed). Name the reason so a
-				// silent "the bot ignores me" report is traceable. Messages that
-				// DO normalize — including group messages not addressed to the
-				// bot — are routed on purpose: the engine owns that drop, so it
-				// records the audit row and runs the dedup gate.
-				c.logger.InfoContext(ctx, "infoflow: frame could not be normalized",
-					"drop_reason", dropReason,
-					"installation_id", c.appID,
-					"bot_user_id_configured", c.botUserID != "",
-					"hint", "check bot_user_id and the robot's message-receive configuration",
-				)
-				return nil
-			}
-			return c.handler(ctx, msg)
-		},
+		onFrame:    c.handleFrame,
 	}
 	return conn.run(ctx)
+}
+
+// handleFrame normalizes one event and, for a quote explicitly selected by the
+// sender, resolves the quoted message's full text before handing the message to
+// the engine.
+func (c *infoflowChannel) handleFrame(ctx context.Context, frame Frame) error {
+	raw, err := parseFramePayload(frame)
+	if err != nil {
+		c.logger.InfoContext(ctx, "infoflow: dropped non-payload frame", "error", err)
+		return nil
+	}
+	// Enrich the self-identity set with the group-scoped identity before
+	// normalization: InfoFlow's group AT element usually carries only
+	// the robot's DISPLAY NAME, which the configured id cannot match.
+	// Extra tokens are harmless for p2p (mention checking is skipped).
+	self := newIdentitySet(c.botUserID, c.botMentionNames)
+	if groupID := groupIDFromRaw(raw); groupID != "" && c.groupIdentity != nil {
+		if tokens, _ := c.groupIdentity.lookup(ctx, groupID); len(tokens) > 0 {
+			self = self.withResolved(tokens)
+		}
+	}
+	msg, dropReason, ok := inboundFromPayloadReasonWithIdentity(raw, c.appID, self)
+	if !ok {
+		// The payload could not even be turned into a message (missing
+		// sender/content/group id, or malformed). Name the reason so a
+		// silent "the bot ignores me" report is traceable. Messages that
+		// DO normalize — including group messages not addressed to the
+		// bot — are routed on purpose: the engine owns that drop, so it
+		// records the audit row and runs the dedup gate.
+		c.logger.InfoContext(ctx, "infoflow: frame could not be normalized",
+			"drop_reason", dropReason,
+			"installation_id", c.appID,
+			"bot_user_id_configured", c.botUserID != "",
+			"hint", "check bot_user_id and the robot's message-receive configuration",
+		)
+		return nil
+	}
+	if msg.HasSelectedContext && c.quoteEnricher != nil {
+		msg = c.enrichQuoteOrigin(ctx, msg, raw, self)
+	}
+	return c.handler(ctx, msg)
+}
+
+// enrichQuoteOrigin looks the quoted message up and re-renders the inbound text
+// with its origin. The lookup runs on a detached, bounded context so neither a
+// cancelled WebSocket nor a slow platform call can take the main message down;
+// whatever the outcome, the handler still receives a message.
+func (c *infoflowChannel) enrichQuoteOrigin(ctx context.Context, msg channel.InboundMessage, raw json.RawMessage, self identitySet) channel.InboundMessage {
+	var payload infoflowRaw
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return msg
+	}
+	if anyString(payload.AppID) == "" {
+		payload.AppID = c.appID
+	}
+	quote := quoteForPayload(payload)
+	if quote == nil {
+		return msg
+	}
+	origin := &quoteOrigin{State: quoteStateSkipped}
+	if query, ok := quoteQueryFor(msg, payload, quote); ok {
+		enrichCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), quoteEnrichBudget)
+		origin = c.quoteEnricher.Enrich(enrichCtx, quoteEnrichRequest{
+			AppID:     c.appID,
+			AppKey:    c.appKey,
+			AppSecret: c.appSecret,
+			Query:     query,
+		})
+		cancel()
+	}
+	enriched, ok := attachQuoteOrigin(msg, origin, c.appID, self)
+	if !ok {
+		return msg
+	}
+	c.logQuoteOrigin(ctx, origin)
+	return enriched
+}
+
+// logQuoteOrigin records the outcome without logging quoted content.
+func (c *infoflowChannel) logQuoteOrigin(ctx context.Context, origin *quoteOrigin) {
+	if origin == nil || c.logger == nil {
+		return
+	}
+	c.logger.InfoContext(ctx, "infoflow: quote origin resolved",
+		"quote_origin", string(origin.State),
+		"source", origin.Source,
+		"elapsed_ms", origin.ElapsedMS,
+		"msg_type", origin.MsgType,
+		"installation_id", c.appID,
+	)
 }
 
 // ChannelDeps are the shared dependencies the InfoFlow Factory closes over.
@@ -124,6 +182,10 @@ type ChannelDeps struct {
 	Decrypt Decrypter
 	Client  *Client
 	Logger  *slog.Logger
+	// QuoteEnrich injects the quoted-message full-text resolver. A nil value
+	// builds the default resolver unless MULTICA_INFOFLOW_QUOTE_ORIGIN=off, so
+	// the feature works in every environment without editing shared wiring.
+	QuoteEnrich *quoteEnricher
 }
 
 // Register builds/registers the per-installation InfoFlow factory so
@@ -141,6 +203,12 @@ func newFactory(deps ChannelDeps) channel.Factory {
 	if client == nil {
 		client = NewClient(nil, "")
 	}
+	enricher := deps.QuoteEnrich
+	if enricher == nil && quoteOriginEnabled() {
+		// One resolver per process: the concurrency cap and the cache are
+		// shared across installations.
+		enricher = newQuoteEnricher(client, logger)
+	}
 	return func(cfg channel.Config) (channel.Channel, error) {
 		creds, err := decodeCredentials(cfg.Raw, deps.Decrypt)
 		if err != nil {
@@ -157,6 +225,7 @@ func newFactory(deps ChannelDeps) channel.Factory {
 			botMentionNames: creds.BotMentionNames,
 			client:          client,
 			groupIdentity:   newGroupIdentityResolver(client, creds.AppKey, creds.AppSecret, creds.AppID),
+			quoteEnricher:   enricher,
 			handler:         cfg.Handler,
 			logger:          logger,
 		}, nil
