@@ -7,7 +7,6 @@ import {
   LayoutGrid,
   Pin,
   PinOff,
-  Plus,
   Rows3,
   Trash2,
 } from "@multica/ui/icons";
@@ -32,7 +31,11 @@ import { useWorkspaceId } from "@multica/core/hooks";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { useAuthStore } from "@multica/core/auth";
 import { useActorName } from "@multica/core/workspace/hooks";
-import { memberListOptions } from "@multica/core/workspace/queries";
+import {
+  agentListOptions,
+  memberListOptions,
+} from "@multica/core/workspace/queries";
+import { canDeleteProject } from "@multica/core/projects/deletion-permissions";
 import { useModalStore } from "@multica/core/modals";
 import { AppLink, useIntentNavigate } from "../../navigation";
 import { ActorAvatar } from "../../common/actor-avatar";
@@ -71,7 +74,6 @@ import {
   CollectionFilterButton,
   CollectionNoMatches,
   CollectionPageHeader,
-  CollectionPageState,
   CollectionResetButton,
   CollectionScopeItems,
 } from "../../layout/collection-page";
@@ -86,6 +88,7 @@ import {
   type CollectionSort,
 } from "../../layout/collection-list";
 import { ProjectIcon } from "./project-icon";
+import { ProjectsIntro } from "./projects-intro";
 import { useT } from "../../i18n";
 import { useFormatRelativeDate } from "./labels";
 import { ProjectStatusBadge, ProjectPriorityBadge } from "./project-badge";
@@ -395,7 +398,7 @@ function countActiveFilters(f: ProjectListFilters): number {
 }
 
 // Batch toolbar — page-anchored (not viewport). Pin all selected (any
-// member) + Delete (workspace admin). Mirrors the other lists.
+// member) + Delete (only when every selected project is deletable).
 function ProjectBatchToolbar({
   rows,
   pinnedIds,
@@ -502,17 +505,16 @@ export function ProjectsPage() {
 
   const { data: projects = [], isLoading } = useQuery(projectListOptions(wsId));
   const { data: members = [] } = useQuery(memberListOptions(wsId));
+  const { data: agents = [] } = useQuery(agentListOptions(wsId));
   const { data: pins = [] } = useQuery({
     ...pinListOptions(wsId, currentUser?.id ?? ""),
     enabled: !!wsId && !!currentUser?.id,
   });
   const openCreateProject = () => useModalStore.getState().open("create-project");
 
-  const isWorkspaceAdmin = useMemo(() => {
-    if (!currentUser) return false;
-    const me = members.find((m: MemberWithUser) => m.user_id === currentUser.id);
-    return me?.role === "owner" || me?.role === "admin";
-  }, [members, currentUser]);
+  const role = members.find((m: MemberWithUser) => m.user_id === currentUser?.id)?.role ?? null;
+  const mayDelete = (project: Project) =>
+    canDeleteProject(project, currentUser?.id ?? null, role, agents);
 
   const pinnedProjectIds = useMemo(() => {
     const s = new Set<string>();
@@ -847,17 +849,7 @@ export function ProjectsPage() {
       />
 
       {showEmpty ? (
-        <CollectionPageState
-          icon={FolderKanban}
-          title={t(($) => $.page.empty)}
-          description={t(($) => $.page.empty_description)}
-          actions={
-            <Button size="sm" onClick={openCreateProject}>
-              <Plus aria-hidden="true" />
-              {t(($) => $.page.new_project)}
-            </Button>
-          }
-        />
+        <ProjectsIntro onCreate={openCreateProject} />
       ) : (
         <>
           {isCompact ? (
@@ -874,7 +866,7 @@ export function ProjectsPage() {
                 <ProjectRowActions
                   project={project}
                   pinned={pinnedProjectIds.has(project.id)}
-                  canDelete={isWorkspaceAdmin}
+                  canDelete={mayDelete(project)}
                 />
               )}
               sort={sort}
@@ -903,7 +895,7 @@ export function ProjectsPage() {
                     key={project.id}
                     project={project}
                     pinned={pinnedProjectIds.has(project.id)}
-                    canDelete={isWorkspaceAdmin}
+                    canDelete={mayDelete(project)}
                   />
                 ))}
               </div>
@@ -913,7 +905,7 @@ export function ProjectsPage() {
           <ProjectBatchToolbar
             rows={selectedProjects}
             pinnedIds={pinnedProjectIds}
-            canDelete={isWorkspaceAdmin}
+            canDelete={selectedProjects.length > 0 && selectedProjects.every(mayDelete)}
             onClear={() => setSelectedIds(new Set())}
           />
         </>
