@@ -839,3 +839,237 @@ func TestQuoteMessageDetailContentAndTime(t *testing.T) {
 		})
 	}
 }
+
+// TestChannelHandleFramePreserves19DigitQuoteID is DEC23's end-to-end guard:
+// JSON number -> json.Number -> exact query, never the float64-rounded value.
+func TestChannelHandleFramePreserves19DigitQuoteID(t *testing.T) {
+	const exact = "1879034596937550622"
+	const rounded = "1879034596937550592"
+	gw := &quoteGateway{message: func(_ int, w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("msgId"); got != exact {
+			t.Errorf("query msgId = %q, want %q (rounded=%q)", got, exact, rounded)
+			_, _ = w.Write([]byte(`{"code":"ok","data":{"code":200,"data":{"items":null}}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"code":"ok","data":{"code":200,"data":{"items":[{"msgId":"` + exact + `","msgType":"app_msg","content":{"type":"text","text":"机器人完整引用"}}]}}}`))
+	}}
+	srv := gw.start(t)
+	raw := replyDataRaw(`"content":{"type":"text","text":"机器人引用.."},"sBasemsgId":1879034596937550622`, "问题")
+
+	var got channel.InboundMessage
+	ch := &infoflowChannel{
+		appID: "14534", appKey: "app-key", appSecret: "app-secret", botUserID: "4100104388",
+		client: NewClient(srv.Client(), srv.URL), quoteEnricher: newQuoteEnricher(NewClient(srv.Client(), srv.URL), discardLogger()), logger: discardLogger(),
+		handler: func(_ context.Context, msg channel.InboundMessage) error { got = msg; return nil },
+	}
+	if err := ch.handleFrame(context.Background(), Frame{Method: FrameData, Payload: raw}); err != nil {
+		t.Fatalf("handleFrame: %v", err)
+	}
+	if got.ReplyTo == nil || got.ReplyTo.MessageID != exact {
+		t.Fatalf("ReplyTo.MessageID = %+v, want exact %s", got.ReplyTo, exact)
+	}
+	if query := gw.lastQuery.Get("msgId"); query != exact {
+		t.Fatalf("actual query msgId = %q, want %q", query, exact)
+	} else if query == rounded {
+		t.Fatalf("actual query msgId is the float64-rounded value %q", query)
+	}
+	if !strings.Contains(got.Text, quoteTagFull) || !strings.Contains(got.Text, "机器人完整引用") {
+		t.Fatalf("full text was not rendered: %s", got.Text)
+	}
+	if strings.Contains(got.Text, rounded) {
+		t.Fatalf("rounded id leaked into output: %s", got.Text)
+	}
+}
+
+// TestChannelHandleFrameRetriesSMsgID2OnNotFound is DEC24: first not_found,
+// second candidate ok => full text, attempts=2 and matched=smsgid2.
+func TestChannelHandleFrameRetriesSMsgID2OnNotFound(t *testing.T) {
+	var mu sync.Mutex
+	var ids []string
+	gw := &quoteGateway{message: func(call int, w http.ResponseWriter, r *http.Request) {
+		id := r.URL.Query().Get("msgId")
+		mu.Lock()
+		ids = append(ids, id)
+		mu.Unlock()
+		if call == 1 {
+			_, _ = w.Write([]byte(`{"code":"ok","data":{"code":200,"data":{"items":null}}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"code":"ok","data":{"code":200,"data":{"items":[{"msgId":"ALT","content":{"type":"text","text":"sMsgId2 命中全文"}}]}}}`))
+	}}
+	srv := gw.start(t)
+	raw := replyDataRaw(`"content":{"type":"text","text":"base 预览.."},"sBasemsgId":"BASE","sMsgId2":"ALT"`, "问题")
+
+	var got channel.InboundMessage
+	ch := &infoflowChannel{
+		appID: "14534", appKey: "app-key", appSecret: "app-secret", botUserID: "4100104388",
+		client: NewClient(srv.Client(), srv.URL), quoteEnricher: newQuoteEnricher(NewClient(srv.Client(), srv.URL), discardLogger()), logger: discardLogger(),
+		handler: func(_ context.Context, msg channel.InboundMessage) error { got = msg; return nil },
+	}
+	if err := ch.handleFrame(context.Background(), Frame{Method: FrameData, Payload: raw}); err != nil {
+		t.Fatalf("handleFrame: %v", err)
+	}
+	mu.Lock()
+	gotIDs := append([]string(nil), ids...)
+	mu.Unlock()
+	if len(gotIDs) != 2 || gotIDs[0] != "BASE" || gotIDs[1] != "ALT" {
+		t.Fatalf("candidate order = %v, want [BASE ALT]", gotIDs)
+	}
+	if !strings.Contains(got.Text, quoteTagFull) || !strings.Contains(got.Text, "sMsgId2 命中全文") {
+		t.Fatalf("fallback full text missing: %s", got.Text)
+	}
+	if !strings.Contains(string(got.Raw), `"matched":"smsgid2"`) || !strings.Contains(string(got.Raw), `"attempts":2`) {
+		t.Fatalf("origin missing matched/attempts: %s", got.Raw)
+	}
+}
+
+// TestChannelHandleFrameBothCandidatesNotFound: both not_found => two requests,
+// truncated preview, attempts=2.
+func TestChannelHandleFrameBothCandidatesNotFound(t *testing.T) {
+	gw := &quoteGateway{message: func(_ int, w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"code":"ok","data":{"code":200,"data":{"items":null}}}`))
+	}}
+	srv := gw.start(t)
+	raw := replyDataRaw(`"content":{"type":"text","text":"两次都没有.."},"sBasemsgId":"BASE","sMsgId2":"ALT"`, "主消息")
+
+	var got channel.InboundMessage
+	ch := &infoflowChannel{
+		appID: "14534", appKey: "app-key", appSecret: "app-secret", botUserID: "4100104388",
+		client: NewClient(srv.Client(), srv.URL), quoteEnricher: newQuoteEnricher(NewClient(srv.Client(), srv.URL), discardLogger()), logger: discardLogger(),
+		handler: func(_ context.Context, msg channel.InboundMessage) error { got = msg; return nil },
+	}
+	if err := ch.handleFrame(context.Background(), Frame{Method: FrameData, Payload: raw}); err != nil {
+		t.Fatalf("handleFrame: %v", err)
+	}
+	if _, message := gw.calls(); message != 2 {
+		t.Fatalf("both candidates must be attempted, message calls=%d", message)
+	}
+	if !strings.Contains(got.Text, quoteTagTruncated) || !strings.Contains(got.Text, "两次都没有..") {
+		t.Fatalf("truncated preview missing: %s", got.Text)
+	}
+	if !strings.Contains(string(got.Raw), `"state":"not_found"`) || !strings.Contains(string(got.Raw), `"attempts":2`) {
+		t.Fatalf("origin must record two not_found attempts: %s", got.Raw)
+	}
+	if strings.Contains(string(got.Raw), `"matched"`) {
+		t.Fatalf("not_found must not claim a matched candidate: %s", got.Raw)
+	}
+}
+
+// TestChannelHandleFrameSameCandidateSkipped: duplicate ids make one request.
+func TestChannelHandleFrameSameCandidateSkipped(t *testing.T) {
+	gw := &quoteGateway{message: func(_ int, w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"code":"ok","data":{"code":200,"data":{"items":[{"content":{"type":"text","text":"同 id 全文"}}]}}}`))
+	}}
+	srv := gw.start(t)
+	raw := replyDataRaw(`"content":{"type":"text","text":"同 id.."},"sBasemsgId":"SAME","sMsgId2":"SAME"`, "主消息")
+
+	var got channel.InboundMessage
+	ch := &infoflowChannel{
+		appID: "14534", appKey: "app-key", appSecret: "app-secret", botUserID: "4100104388",
+		client: NewClient(srv.Client(), srv.URL), quoteEnricher: newQuoteEnricher(NewClient(srv.Client(), srv.URL), discardLogger()), logger: discardLogger(),
+		handler: func(_ context.Context, msg channel.InboundMessage) error { got = msg; return nil },
+	}
+	if err := ch.handleFrame(context.Background(), Frame{Method: FrameData, Payload: raw}); err != nil {
+		t.Fatalf("handleFrame: %v", err)
+	}
+	if _, message := gw.calls(); message != 1 {
+		t.Fatalf("duplicate ids must make one request, message calls=%d", message)
+	}
+	if !strings.Contains(string(got.Raw), `"attempts":1`) || !strings.Contains(string(got.Raw), `"matched":"sbasemsgid"`) {
+		t.Fatalf("origin = %s", got.Raw)
+	}
+}
+
+// TestQuoteEnricherRetryStopsOnDeniedOrTimeout locks the no-retry boundary.
+func TestQuoteEnricherRetryStopsOnDeniedOrTimeout(t *testing.T) {
+	t.Run("denied", func(t *testing.T) {
+		gw := &quoteGateway{message: func(_ int, w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(`{"code":"ok","data":{"code":720001,"message":"denied"}}`))
+		}}
+		srv := gw.start(t)
+		enricher := newQuoteEnricher(NewClient(srv.Client(), srv.URL), discardLogger())
+		req := testQuoteRequest("BASE")
+		req.Candidates = []quoteIDCandidate{{Field: "sbasemsgid", ID: "BASE"}, {Field: "smsgid2", ID: "ALT"}}
+		origin := enricher.Enrich(context.Background(), req)
+		if origin.State != quoteStateDenied || origin.Attempts != 1 {
+			t.Fatalf("origin = %+v, want denied attempts=1", origin)
+		}
+		if _, message := gw.calls(); message != 1 {
+			t.Fatalf("denied must not retry, message calls=%d", message)
+		}
+	})
+	t.Run("timeout", func(t *testing.T) {
+		gw := &quoteGateway{message: func(_ int, w http.ResponseWriter, _ *http.Request) {
+			time.Sleep(200 * time.Millisecond)
+			_, _ = w.Write([]byte(`{"code":"ok","data":{"content":"late"}}`))
+		}}
+		srv := gw.start(t)
+		enricher := newQuoteEnricher(NewClient(srv.Client(), srv.URL), discardLogger())
+		enricher.timeout = 50 * time.Millisecond
+		req := testQuoteRequest("BASE")
+		req.Candidates = []quoteIDCandidate{{Field: "sbasemsgid", ID: "BASE"}, {Field: "smsgid2", ID: "ALT"}}
+		origin := enricher.Enrich(context.Background(), req)
+		if origin.State != quoteStateTimeout || origin.Attempts != 1 {
+			t.Fatalf("origin = %+v, want timeout attempts=1", origin)
+		}
+		if _, message := gw.calls(); message != 1 {
+			t.Fatalf("timeout must not retry, message calls=%d", message)
+		}
+	})
+}
+
+// TestProcessFrameLogsQuoteIDMetadata is DEC25: candidate diagnostics contain
+// field/type/length/hash only, never the 19-digit id itself.
+func TestProcessFrameLogsQuoteIDMetadata(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, nil))
+	ch := &infoflowChannel{
+		appID:  "14534",
+		logger: logger,
+		handler: func(_ context.Context, _ channel.InboundMessage) error {
+			return nil
+		},
+	}
+	raw := replyDataRaw(`"content":{"type":"text","text":"secret preview"},"sBasemsgId":1879034596937550622,"sMsgId2":"SECRET-ALT"`, "secret own")
+	if err := ch.processFrame(context.Background(), raw); err != nil {
+		t.Fatalf("processFrame: %v", err)
+	}
+	logged := buf.String()
+	if strings.Contains(logged, "1879034596937550622") || strings.Contains(logged, "SECRET-ALT") {
+		t.Fatalf("candidate id leaked: %s", logged)
+	}
+	var entry map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(logged)), &entry); err != nil {
+		t.Fatalf("decode log: %v", err)
+	}
+	candidates, ok := entry["quote_id_candidates"].([]any)
+	if !ok || len(candidates) != 2 {
+		t.Fatalf("quote_id_candidates = %#v", entry["quote_id_candidates"])
+	}
+	wantFields := []string{"sBasemsgId", "sMsgId2"}
+	wantTypes := []string{"number", "string"}
+	wantLengths := []int{19, 10}
+	for i, rawCandidate := range candidates {
+		candidate, ok := rawCandidate.(map[string]any)
+		if !ok {
+			t.Fatalf("candidate %d = %#v", i, rawCandidate)
+		}
+		if candidate["field"] != wantFields[i] || candidate["json_type"] != wantTypes[i] || candidate["length"] != float64(wantLengths[i]) || candidate["sha256_8"] == "" {
+			t.Fatalf("candidate %d = %#v", i, candidate)
+		}
+	}
+	if got := entry["quote_id_candidates"].([]any)[0].(map[string]any)["sha256_8"]; got != quoteIDFingerprint("1879034596937550622") {
+		t.Fatalf("hash = %v, want %s", got, quoteIDFingerprint("1879034596937550622"))
+	}
+}
+
+// TestQuoteIDValueRejectsFloat64 guards the exact-id path against the original
+// 19-digit bug: a rounded float64 must never become a candidate.
+func TestQuoteIDValueRejectsFloat64(t *testing.T) {
+	if id := quoteIDString(float64(1879034596937550622)); id != "" {
+		t.Fatalf("float64 must not become an id, got %q", id)
+	}
+	if id, typ := quoteIDValue(json.Number("1879034596937550622")); id != "1879034596937550622" || typ != "number" {
+		t.Fatalf("json.Number = %q/%q", id, typ)
+	}
+}

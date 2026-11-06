@@ -2,6 +2,8 @@ package infoflow
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -170,8 +172,7 @@ func (c *infoflowChannel) logInboundShape(ctx context.Context, raw json.RawMessa
 	if c.logger == nil {
 		return
 	}
-	var payload infoflowRaw
-	_ = json.Unmarshal(raw, &payload)
+	payload, _ := decodeInfoflowRaw(raw)
 	chatType := "p2p"
 	headerID := anyString(payload.MsgID)
 	replyPresent, quotePresent := false, false
@@ -218,6 +219,18 @@ func (c *infoflowChannel) logInboundShape(ctx context.Context, raw json.RawMessa
 		quoteFields = shapeFields(element, "")
 		sort.Strings(quoteFields)
 	}
+	quoteIDs := []quoteIDCandidate{}
+	if q := quoteFromBody(body); q != nil {
+		quoteIDs = quoteCandidatesFor(q)
+	}
+	// The existing header_messageid field is the current message id, not a
+	// candidate. If a synthetic shape reuses the quoted id there, blank it so
+	// DEC25 remains true: candidate values never appear in the log.
+	for _, candidate := range quoteIDs {
+		if headerID != "" && candidate.ID == headerID {
+			headerID = ""
+		}
+	}
 	fromIDSource := ""
 	if payload.Message != nil && strings.TrimSpace(payload.Message.Header.FromUserID) != "" {
 		fromIDSource = "current_sender"
@@ -233,8 +246,34 @@ func (c *infoflowChannel) logInboundShape(ctx context.Context, raw json.RawMessa
 		"body_types", bodyTypes,
 		"body_keys", keysByType,
 		"quote_element_fields", quoteFields,
+		"quote_id_candidates", quoteIDLogEntries(quoteIDs),
 		"quote_from_id_source", fromIDSource,
 	)
+}
+
+// quoteIDLogEntries describes candidate ids without logging their values.
+// DEC25: field name, JSON type, length and sha256[:8] are enough to align a
+// real sample with the query id while preserving A29 redaction.
+func quoteIDLogEntries(candidates []quoteIDCandidate) []map[string]any {
+	entries := make([]map[string]any, 0, len(candidates))
+	for _, candidate := range candidates {
+		jsonType := candidate.JSONType
+		if jsonType == "" {
+			jsonType = "string"
+		}
+		entries = append(entries, map[string]any{
+			"field":     candidate.Field,
+			"json_type": jsonType,
+			"length":    len(candidate.ID),
+			"sha256_8":  quoteIDFingerprint(candidate.ID),
+		})
+	}
+	return entries
+}
+
+func quoteIDFingerprint(id string) string {
+	sum := sha256.Sum256([]byte(id))
+	return hex.EncodeToString(sum[:])[:8]
 }
 
 // shapeFields lists key names, prefixing one level of nested objects with
@@ -304,8 +343,8 @@ func (c *infoflowChannel) deliver(ctx context.Context, msg channel.InboundMessag
 // cancelled WebSocket nor a slow platform call can take the main message down;
 // whatever the outcome, the handler still receives a message.
 func (c *infoflowChannel) enrichQuoteOrigin(ctx context.Context, msg channel.InboundMessage, raw json.RawMessage, self identitySet) channel.InboundMessage {
-	var payload infoflowRaw
-	if err := json.Unmarshal(raw, &payload); err != nil {
+	payload, err := decodeInfoflowRaw(raw)
+	if err != nil {
 		return msg
 	}
 	if anyString(payload.AppID) == "" {
@@ -319,10 +358,11 @@ func (c *infoflowChannel) enrichQuoteOrigin(ctx context.Context, msg channel.Inb
 	if query, ok := quoteQueryFor(msg, payload, quote); ok {
 		enrichCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), quoteEnrichBudget)
 		origin = c.quoteEnricher.Enrich(enrichCtx, quoteEnrichRequest{
-			AppID:     c.appID,
-			AppKey:    c.appKey,
-			AppSecret: c.appSecret,
-			Query:     query,
+			AppID:      c.appID,
+			AppKey:     c.appKey,
+			AppSecret:  c.appSecret,
+			Query:      query,
+			Candidates: quoteCandidatesFor(quote),
 		})
 		cancel()
 	}
@@ -407,8 +447,8 @@ func newFactory(deps ChannelDeps) channel.Factory {
 // committing to a full normalization (the group id may arrive top-level or in
 // the message header). Empty means p2p or not a group frame.
 func groupIDFromRaw(raw json.RawMessage) string {
-	var payload infoflowRaw
-	if err := json.Unmarshal(raw, &payload); err != nil {
+	payload, err := decodeInfoflowRaw(raw)
+	if err != nil {
 		return ""
 	}
 	if !isGroupPayload(payload) {

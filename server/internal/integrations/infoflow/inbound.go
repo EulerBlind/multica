@@ -1,6 +1,7 @@
 package infoflow
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -56,6 +57,18 @@ type infoflowQuote struct {
 	Header     infoflowHeader   `json:"header"`
 	FromUserID string           `json:"fromuserid"`
 	Body       []map[string]any `json:"body"`
+	// IDCandidates keeps the raw sBasemsgId/sMsgId2 sequence so Enrich can
+	// retry a not-found base id with the alternate id (DEC24). Values are
+	// strings: a 19-digit id must never pass through float64.
+	IDCandidates []quoteIDCandidate `json:"-"`
+}
+
+// quoteIDCandidate is one message-id candidate and the field it came from.
+// JSONType is diagnostic only and is never rendered to the model.
+type quoteIDCandidate struct {
+	Field    string
+	ID       string
+	JSONType string
 }
 
 // inboundFromPayload translates a raw InfoFlow event payload into the
@@ -91,11 +104,24 @@ func inboundFromPayloadReason(raw json.RawMessage, appID, botUserID string) (cha
 	return inboundFromPayloadReasonWithIdentity(raw, appID, newIdentitySet(botUserID, nil))
 }
 
+// decodeInfoflowRaw preserves JSON numbers as json.Number. InfoFlow ids are
+// 19-digit integers beyond float64's exact range; decoding into map[string]any
+// would silently round them before they reach getSingleMsg (DEC23).
+func decodeInfoflowRaw(raw json.RawMessage) (infoflowRaw, error) {
+	var payload infoflowRaw
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	if err := dec.Decode(&payload); err != nil {
+		return infoflowRaw{}, err
+	}
+	return payload, nil
+}
+
 // inboundFromPayloadReasonWithIdentity is inboundFromPayloadReason over an
 // explicit identity set (configured + group-resolved).
 func inboundFromPayloadReasonWithIdentity(raw json.RawMessage, appID string, self identitySet) (channel.InboundMessage, string, bool) {
-	var payload infoflowRaw
-	if err := json.Unmarshal(raw, &payload); err != nil {
+	payload, err := decodeInfoflowRaw(raw)
+	if err != nil {
 		return channel.InboundMessage{}, dropReasonMalformed, false
 	}
 	rawAppID := appID
@@ -640,7 +666,15 @@ func originAppliesTo(origin *quoteOrigin, quote *infoflowQuote) bool {
 	if origin.QueryID == "" {
 		return true
 	}
-	return origin.QueryID == anyString(quote.MessageID)
+	if origin.QueryID == quoteIDString(quote.MessageID) {
+		return true
+	}
+	for _, candidate := range quote.IDCandidates {
+		if candidate.ID == origin.QueryID {
+			return true
+		}
+	}
+	return false
 }
 
 // renderQuoteWithOrigin renders the labelled quoted block for a resolved origin.
@@ -725,7 +759,7 @@ func groupReplyTo(message *infoflowEventMessage) *channel.ReplyCtx {
 	if q == nil {
 		return nil
 	}
-	messageID := anyString(q.MessageID)
+	messageID := quoteIDString(q.MessageID)
 	if messageID == "" {
 		return nil
 	}
@@ -760,6 +794,79 @@ func quoteElementFromBody(body []map[string]any) map[string]any {
 		case "QUOTE", "REPLY", "REFERENCE", "REPLYDATA":
 			return item
 		}
+	}
+	return nil
+}
+
+// quoteIDValue returns an exact id string and its JSON type. Only string and
+// json.Number (and int from in-process fixtures) are accepted: float64 has
+// already lost precision and must never become an id (DEC23).
+func quoteIDValue(v any) (string, string) {
+	switch typed := v.(type) {
+	case string:
+		return strings.TrimSpace(typed), "string"
+	case json.Number:
+		return strings.TrimSpace(typed.String()), "number"
+	case int:
+		return fmt.Sprintf("%d", typed), "number"
+	}
+	return "", ""
+}
+
+func quoteIDString(v any) string {
+	id, _ := quoteIDValue(v)
+	return id
+}
+
+// quoteIDCandidatesFromMaps extracts sBasemsgId then sMsgId2 (each with its
+// field name) and deduplicates equal ids. Legacy messageid aliases are used
+// only when neither live field is present, preserving pre-N93 QUOTE/REPLY.
+func quoteIDCandidatesFromMaps(candidates []map[string]any) []quoteIDCandidate {
+	out := make([]quoteIDCandidate, 0, 2)
+	add := func(field string, keys ...string) bool {
+		for _, candidate := range candidates {
+			for _, key := range keys {
+				v := fieldValue(candidate, key)
+				if v == nil {
+					continue
+				}
+				id, jsonType := quoteIDValue(v)
+				if id == "" {
+					continue
+				}
+				for _, existing := range out {
+					if existing.ID == id {
+						return true
+					}
+				}
+				out = append(out, quoteIDCandidate{Field: field, ID: id, JSONType: jsonType})
+				return true
+			}
+		}
+		return false
+	}
+	add("sBasemsgId", "sbasemsgid", "basemsgid")
+	add("sMsgId2", "smsgid2", "msgid2")
+	if len(out) == 0 {
+		add("messageid", "messageid", "msgid", "message_id", "msg_id", "quoteid", "quote_id", "id")
+	}
+	if len(out) > 2 {
+		out = out[:2]
+	}
+	return out
+}
+
+// quoteCandidatesFor exposes the sequence to Enrich. Explicit reply/quote
+// shapes carry only messageid, so they degrade to a single candidate.
+func quoteCandidatesFor(quote *infoflowQuote) []quoteIDCandidate {
+	if quote == nil {
+		return nil
+	}
+	if len(quote.IDCandidates) > 0 {
+		return append([]quoteIDCandidate(nil), quote.IDCandidates...)
+	}
+	if id := quoteIDString(quote.MessageID); id != "" {
+		return []quoteIDCandidate{{Field: "messageid", ID: id, JSONType: "string"}}
 	}
 	return nil
 }
@@ -801,12 +908,14 @@ func quoteFromBody(body []map[string]any) *infoflowQuote {
 		}
 		return ""
 	}
-	q := &infoflowQuote{}
-	// DEC18: the live REPLYDATA element pins the quoted message with
-	// sBasemsgId and falls back to sMsgId2. Older/unknown shapes keep the
-	// tolerant aliases so the pre-N93 QUOTE/REPLY/REFERENCE forms still work.
-	q.MessageID = get("sbasemsgid", "basemsgid", "smsgid2", "msgid2",
-		"messageid", "msgid", "message_id", "msg_id", "quoteid", "quote_id", "id")
+	q := &infoflowQuote{MessageID: ""}
+	// DEC18/DEC24: sBasemsgId is the preferred id and sMsgId2 is the fallback.
+	// Keep both candidates (as strings) so Enrich can retry only on not_found.
+	// Legacy aliases are used only when neither live field exists.
+	q.IDCandidates = quoteIDCandidatesFromMaps(candidates)
+	if len(q.IDCandidates) > 0 {
+		q.MessageID = q.IDCandidates[0].ID
+	}
 	// imid is the quoted author. It is display/verification only: DEC17 takes
 	// fromId from the current sender, never from this field.
 	q.FromUserID = get("fromuserid", "fromid", "from_userid", "from_user_id",
