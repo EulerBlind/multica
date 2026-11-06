@@ -291,9 +291,10 @@ func classifyQuoteError(err error) (quoteOriginState, string) {
 		case apiErr.Code == errCodeAPINotAllowed:
 			return quoteStateDenied, message
 		default:
-			// Includes business rejections we cannot classify (e.g. 40001 group
-			// not follow): not worth a permission cooldown, retried after the
-			// short negative cache.
+			// DEC8: 40070 stays unavailable. No documented evidence says it is
+			// equivalent to not_found, so it keeps the conservative 2-minute
+			// negative cache instead of the 10-minute not-found cache. The same
+			// branch covers 40001 group-not-follow and other unknown errcodes.
 			return quoteStateUnavailable, message
 		}
 	}
@@ -321,10 +322,9 @@ func truncateQuoteText(text string) string {
 	return text[:cut] + quoteTagOverlong
 }
 
-// quoteQueryFor builds the lookup query from one inbound message. Every
-// parameter follows N79 §5.4: msgId prefers reply over quote, receiver is the
-// group id or the bot's agent id, and fromId falls back quote header → quote
-// sender → current sender.
+// quoteQueryFor builds the lookup query from one inbound message. msgId prefers
+// reply over quote, and the receiver is the group id or the bot's agent id.
+// fromId only comes from the quote itself (DEC6): see quoteFromID.
 func quoteQueryFor(msg channel.InboundMessage, payload infoflowRaw, quote *infoflowQuote) (quoteQuery, bool) {
 	if quote == nil {
 		return quoteQuery{}, false
@@ -341,29 +341,25 @@ func quoteQueryFor(msg channel.InboundMessage, payload infoflowRaw, quote *infof
 	if query.ReceiverID == "" {
 		return quoteQuery{}, false
 	}
-	query.FromID = quoteFromID(quote, payload)
+	query.FromID = quoteFromID(quote)
 	if query.FromID == "" {
 		return quoteQuery{}, false
 	}
 	return query, true
 }
 
-// quoteFromID resolves the quoted message's author in preference order.
-func quoteFromID(quote *infoflowQuote, payload infoflowRaw) string {
-	if quote != nil {
-		if id := strings.TrimSpace(quote.Header.FromUserID); id != "" {
-			return id
-		}
-		if id := strings.TrimSpace(quote.FromUserID); id != "" {
-			return id
-		}
+// quoteFromID resolves the quoted message's author from the quote itself only.
+// DEC6 (N81 Q4): falling back to the current sender can read a DIFFERENT message
+// and silently splice it into the conversation, which is worse than no lookup.
+// A quote without its own sender therefore stays a preview with zero requests.
+func quoteFromID(quote *infoflowQuote) string {
+	if quote == nil {
+		return ""
 	}
-	if payload.Message != nil {
-		if id := strings.TrimSpace(payload.Message.Header.FromUserID); id != "" {
-			return id
-		}
+	if id := strings.TrimSpace(quote.Header.FromUserID); id != "" {
+		return id
 	}
-	return strings.TrimSpace(payload.FromUserID)
+	return strings.TrimSpace(quote.FromUserID)
 }
 
 // quoteForPayload returns the quote the enricher should resolve.

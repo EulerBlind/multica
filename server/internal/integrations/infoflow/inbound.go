@@ -500,25 +500,59 @@ func flattenQuoted(message *infoflowEventMessage, origin *quoteOrigin) string {
 		if q == nil {
 			continue
 		}
-		if originAppliesTo(origin, q) {
+		resolved := originAppliesTo(origin, q)
+		if resolved {
 			lines = append(lines, renderQuoteWithOrigin(origin, q)...)
 		} else {
 			lines = append(lines, renderQuotePreview(q)...)
+		}
+		fullText := ""
+		if resolved && origin.State == quoteStateOK {
+			fullText = origin.Text
 		}
 		for _, bodyLine := range strings.Split(flattenGroupText(q.Body), "\n") {
 			bodyLine = strings.TrimSpace(bodyLine)
 			if bodyLine == "" || seen[bodyLine] {
 				continue
 			}
-			// The full text usually repeats the body's TEXT element; the media
-			// row is the only part the lookup can never supply.
 			if isMediaLine(bodyLine) {
+				// Media only ever comes from the inbound body (A25b): keep every
+				// distinct row, drop only exact repeats.
 				seen[bodyLine] = true
+				lines = append(lines, bodyLine)
+				continue
+			}
+			if fullText != "" && quoteLineDuplicated(bodyLine, q, fullText) {
+				// DEC9: the full text already carries this TEXT element; keeping
+				// both would render "全文 + 预览" twice.
+				continue
 			}
 			lines = append(lines, bodyLine)
 		}
 	}
 	return strings.TrimSpace(strings.Join(lines, "\n"))
+}
+
+// quoteLineDuplicated reports whether a body TEXT line repeats the resolved full
+// text, the preview or the content. Prefix relations count (DEC9): a preview is
+// commonly the original's first N characters plus an ellipsis.
+func quoteLineDuplicated(line string, quote *infoflowQuote, fullText string) bool {
+	if line == "" {
+		return true
+	}
+	candidates := []string{strings.TrimSpace(fullText)}
+	if quote != nil {
+		candidates = append(candidates, strings.TrimSpace(quote.Preview), strings.TrimSpace(quote.Content))
+	}
+	for _, candidate := range candidates {
+		if candidate == "" {
+			continue
+		}
+		if line == candidate || strings.HasPrefix(line, candidate) || strings.HasPrefix(candidate, line) {
+			return true
+		}
+	}
+	return false
 }
 
 // originAppliesTo keeps a stale origin from labelling a quote it did not come

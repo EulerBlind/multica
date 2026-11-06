@@ -223,7 +223,7 @@ func TestChannelHandleFrameEnrichesGroupQuote(t *testing.T) {
 		_, _ = w.Write([]byte(`{"code":"ok","data":{"msgType":"text","content":"` + full + `"}}`))
 	}}
 	srv := gw.start(t)
-	raw := json.RawMessage(`{"groupid":"12572761","message":{"header":{"fromuserid":"wangjianghua","toid":"12572761","totype":"GROUP","msgtype":"MIXED","messageid":"m9"},"reply":{"messageid":"m8","preview":"引用正文这是一段被截…","body":[{"type":"IMAGE","downloadurl":"https://example.com/q.png"}]},"body":[{"type":"AT","atuserids":["4100104388"]},{"type":"TEXT","content":"帮我看看这张图"}]}}`)
+	raw := json.RawMessage(`{"groupid":"12572761","message":{"header":{"fromuserid":"wangjianghua","toid":"12572761","totype":"GROUP","msgtype":"MIXED","messageid":"m9"},"reply":{"messageid":"m8","header":{"fromuserid":"u-quoted"},"preview":"引用正文这是一段被截…","body":[{"type":"IMAGE","downloadurl":"https://example.com/q.png"}]},"body":[{"type":"AT","atuserids":["4100104388"]},{"type":"TEXT","content":"帮我看看这张图"}]}}`)
 
 	var got channel.InboundMessage
 	ch := &infoflowChannel{
@@ -268,7 +268,7 @@ func TestChannelHandleFrameDegradesOnDenied(t *testing.T) {
 		_, _ = w.Write([]byte(`{"code":"ok","data":{"errcode":40000,"errmsg":"Api not allowed"}}`))
 	}}
 	srv := gw.start(t)
-	raw := json.RawMessage(`{"groupid":"12572761","message":{"header":{"fromuserid":"wangjianghua","toid":"12572761","totype":"GROUP","msgtype":"TEXT","messageid":"m9"},"reply":{"messageid":"m8","preview":"被引用的预览文本"},"body":[{"type":"AT","atuserids":["4100104388"]},{"type":"TEXT","content":"原消息"}]}}`)
+	raw := json.RawMessage(`{"groupid":"12572761","message":{"header":{"fromuserid":"wangjianghua","toid":"12572761","totype":"GROUP","msgtype":"TEXT","messageid":"m9"},"reply":{"messageid":"m8","header":{"fromuserid":"u-quoted"},"preview":"被引用的预览文本"},"body":[{"type":"AT","atuserids":["4100104388"]},{"type":"TEXT","content":"原消息"}]}}`)
 
 	var got channel.InboundMessage
 	ch := &infoflowChannel{
@@ -302,7 +302,7 @@ func TestChannelHandleFrameSingleChatQuote(t *testing.T) {
 		_, _ = w.Write([]byte(`{"code":"ok","data":{"msgType":"text","content":"单聊引用的完整原文"}}`))
 	}}
 	srv := gw.start(t)
-	raw := json.RawMessage(`{"agentid":"14534","FromUserId":"u1","Content":"接着上面的问题","MsgId":"m1","MsgType":"text","quote":{"messageid":"m0","preview":"单聊引用的预览…"}}`)
+	raw := json.RawMessage(`{"agentid":"14534","FromUserId":"u1","Content":"接着上面的问题","MsgId":"m1","MsgType":"text","quote":{"messageid":"m0","header":{"fromuserid":"u-quoted"},"preview":"单聊引用的预览…"}}`)
 
 	var got channel.InboundMessage
 	ch := &infoflowChannel{
@@ -399,7 +399,7 @@ func TestChannelHandleFrameSingleChatFallsBackToInstallAppID(t *testing.T) {
 		_, _ = w.Write([]byte(`{"code":"ok","data":{"msgType":"text","content":"单聊全文"}}`))
 	}}
 	srv := gw.start(t)
-	raw := json.RawMessage(`{"FromUserId":"u1","Content":"问题","MsgId":"m1","quote":{"messageid":"m0","preview":"预览…"}}`)
+	raw := json.RawMessage(`{"FromUserId":"u1","Content":"问题","MsgId":"m1","quote":{"messageid":"m0","header":{"fromuserid":"u-quoted"},"preview":"预览…"}}`)
 
 	var got channel.InboundMessage
 	ch := &infoflowChannel{
@@ -422,5 +422,64 @@ func TestChannelHandleFrameSingleChatFallsBackToInstallAppID(t *testing.T) {
 	}
 	if receiver := gw.lastQuery.Get("receiverId"); receiver != "14534" {
 		t.Fatalf("receiverId = %q, want the installation app id", receiver)
+	}
+}
+
+// TestQuoteQueryRequiresQuoteSender is the DEC6 guard (N81 Q4): a quote without
+// its own sender must not borrow the current sender, because that can read a
+// different message.
+func TestQuoteQueryRequiresQuoteSender(t *testing.T) {
+	msg := channel.InboundMessage{Source: channel.Source{ChannelType: TypeInfoFlow, ChatType: channel.ChatTypeGroup, ChatID: "G-1"}}
+	payload := infoflowRaw{FromUserID: "U-X", Message: &infoflowEventMessage{
+		Header: infoflowHeader{FromUserID: "U-X"},
+		Reply:  &infoflowQuote{MessageID: "Q-10", Preview: "只有预览"},
+	}}
+	if query, ok := quoteQueryFor(msg, payload, payload.Message.Reply); ok {
+		t.Fatalf("quote without its own sender must not be looked up: %+v", query)
+	}
+
+	payload.Message.Reply.Header.FromUserID = "U-QUOTED"
+	query, ok := quoteQueryFor(msg, payload, payload.Message.Reply)
+	if !ok || query.FromID != "U-QUOTED" || query.MsgID != "Q-10" {
+		t.Fatalf("quote sender must be used verbatim: %+v ok=%v", query, ok)
+	}
+}
+
+// TestChannelHandleFrameQuoteWithoutSenderMakesNoRequest: the Q4 counter-example
+// end to end — zero getSingleMsg calls, labelled preview, main message delivered.
+func TestChannelHandleFrameQuoteWithoutSenderMakesNoRequest(t *testing.T) {
+	gw := &quoteGateway{message: func(_ int, w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"code":"ok","data":{"content":"不应被请求"}}`))
+	}}
+	srv := gw.start(t)
+	raw := json.RawMessage(`{"groupid":"G-Q4","message":{"header":{"fromuserid":"U-X","toid":"G-Q4","totype":"GROUP","msgtype":"TEXT","messageid":"M-Q4"},"reply":{"messageid":"Q-10","preview":"只有预览的引用"},"body":[{"type":"AT","atuserids":["4100104388"]},{"type":"TEXT","content":"主消息"}]}}`)
+
+	var got channel.InboundMessage
+	ch := &infoflowChannel{
+		appID:         "14534",
+		appKey:        "app-key",
+		appSecret:     "app-secret",
+		botUserID:     "4100104388",
+		client:        NewClient(srv.Client(), srv.URL),
+		quoteEnricher: newQuoteEnricher(NewClient(srv.Client(), srv.URL), discardLogger()),
+		logger:        discardLogger(),
+		handler: func(_ context.Context, msg channel.InboundMessage) error {
+			got = msg
+			return nil
+		},
+	}
+	if err := ch.handleFrame(context.Background(), Frame{Method: FrameData, Payload: raw}); err != nil {
+		t.Fatalf("handleFrame: %v", err)
+	}
+	if token, message := gw.calls(); token != 0 || message != 0 {
+		t.Fatalf("quote without sender must make zero requests, token=%d message=%d", token, message)
+	}
+	for _, want := range []string{quoteTagPreview, "只有预览的引用", "主消息"} {
+		if !strings.Contains(got.Text, want) {
+			t.Fatalf("Text missing %q: %s", want, got.Text)
+		}
+	}
+	if !strings.Contains(string(got.Raw), `"state":"skipped"`) {
+		t.Fatalf("Raw must record the skipped origin: %s", got.Raw)
 	}
 }

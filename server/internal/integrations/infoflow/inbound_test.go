@@ -135,7 +135,7 @@ func TestFlattenQuotedNestedQuoteOneLevel(t *testing.T) {
 // TestInboundPrivateQuoteIsSelectedContext: the single-chat path now parses the
 // top-level quote and sets the reply coordinates (H2′).
 func TestInboundPrivateQuoteIsSelectedContext(t *testing.T) {
-	raw := `{"agentid":"14534","FromUserId":"u1","FromUserName":"alice","Content":"接着说","MsgId":"m1","MsgType":"text","quote":{"messageid":"m0","preview":"被引用的内容"}}`
+	raw := `{"agentid":"14534","FromUserId":"u1","FromUserName":"alice","Content":"接着说","MsgId":"m1","MsgType":"text","quote":{"messageid":"m0","header":{"fromuserid":"u-quoted"},"preview":"被引用的内容"}}`
 	msg, ok := inboundFromPayload(json.RawMessage(raw), "14534", "bot")
 	if !ok {
 		t.Fatal("expected ok")
@@ -158,7 +158,7 @@ func TestInboundPrivateQuoteIsSelectedContext(t *testing.T) {
 	if !ok {
 		t.Fatal("expected a lookup query")
 	}
-	if query.ReceiverType != 7 || query.ReceiverID != "14534" || query.MsgID != "m0" || query.FromID != "u1" {
+	if query.ReceiverType != 7 || query.ReceiverID != "14534" || query.MsgID != "m0" || query.FromID != "u-quoted" {
 		t.Fatalf("query = %+v", query)
 	}
 }
@@ -216,5 +216,49 @@ func TestPrefixPrivateQuoteShapes(t *testing.T) {
 	msg, ok = inboundFromPayload(json.RawMessage(merged), "14534", "bot")
 	if !ok || !msg.HasSelectedContext || !strings.Contains(msg.Text, "顶层引用") {
 		t.Fatalf("top-level quote merge not parsed: %+v", msg)
+	}
+}
+
+// TestFlattenQuotedDeduplicatesBodyText is DEC9: once the full text is resolved,
+// body TEXT lines repeating the preview/content/full text (including prefix
+// relations) are dropped, while image rows stay untouched.
+func TestFlattenQuotedDeduplicatesBodyText(t *testing.T) {
+	full := strings.Repeat("完整原文", 50)
+	quote := &infoflowQuote{
+		MessageID: "m8",
+		Preview:   full[:20] + "…",
+		Content:   full[:30],
+		Body: []map[string]any{
+			{"type": "TEXT", "content": full[:12]},
+			{"type": "TEXT", "content": full},
+			{"type": "IMAGE", "downloadurl": "https://example.com/a.png"},
+		},
+	}
+	got := flattenQuoted(&infoflowEventMessage{Reply: quote}, &quoteOrigin{QueryID: "m8", State: quoteStateOK, Source: "api", Text: full})
+	if n := strings.Count(got, "完整原文"); n != 50 {
+		t.Fatalf("body text duplicated the full text: count=%d\n%s", n, got)
+	}
+	if n := strings.Count(got, "[IMAGE] https://example.com/a.png"); n != 1 {
+		t.Fatalf("image row must appear exactly once, count=%d", n)
+	}
+	if n := strings.Count(got, quoteTagFull); n != 1 {
+		t.Fatalf("full-text label must appear once, count=%d", n)
+	}
+	if strings.Contains(got, full[:20]+"…") {
+		t.Fatalf("preview must not survive a successful lookup: %s", got)
+	}
+}
+
+// TestFlattenQuotedKeepsBodyTextWithoutOrigin protects the pre-lookup path: body
+// TEXT is still useful when the original was never resolved.
+func TestFlattenQuotedKeepsBodyTextWithoutOrigin(t *testing.T) {
+	quote := &infoflowQuote{
+		MessageID: "m8",
+		Preview:   "预览",
+		Body:      []map[string]any{{"type": "TEXT", "content": "body 说明"}},
+	}
+	got := flattenQuoted(&infoflowEventMessage{Reply: quote}, &quoteOrigin{QueryID: "m8", State: quoteStateDenied})
+	if !strings.Contains(got, "body 说明") {
+		t.Fatalf("body text must survive an unresolved lookup: %s", got)
 	}
 }

@@ -26,8 +26,12 @@ type infoflowChannel struct {
 	client          *Client
 	groupIdentity   *groupIdentityResolver
 	quoteEnricher   *quoteEnricher
-	handler         channel.InboundHandler
-	logger          *slog.Logger
+	// workers delivers normalized messages out of the read loop (DEC7). It is
+	// created in Connect and nil in unit tests that drive handleFrame directly,
+	// which keeps those tests synchronous.
+	workers *quoteWorkers
+	handler channel.InboundHandler
+	logger  *slog.Logger
 }
 
 func (c *infoflowChannel) Type() channel.Type { return TypeInfoFlow }
@@ -77,25 +81,56 @@ func (c *infoflowChannel) Connect(ctx context.Context) error {
 	if c.appKey == "" || c.appSecret == "" {
 		return errors.New("infoflow: app key and secret not configured")
 	}
+	c.workers = newQuoteWorkers(ctx, defaultQuoteWorkers, c.logger)
+	defer func() {
+		c.workers.stop()
+		c.workers = nil
+	}()
 	conn := &wsConnector{
 		httpClient: c.client.httpClient,
 		appKey:     c.appKey,
 		appSecret:  c.appSecret,
 		logger:     c.logger,
-		onFrame:    c.handleFrame,
+		onFrame:    c.handleFrameQueued,
 	}
 	return conn.run(ctx)
 }
 
-// handleFrame normalizes one event and, for a quote explicitly selected by the
-// sender, resolves the quoted message's full text before handing the message to
-// the engine.
+// handleFrame is the synchronous frame entry used by tests and by channels
+// without workers: normalize, enrich, then handler.
 func (c *infoflowChannel) handleFrame(ctx context.Context, frame Frame) error {
 	raw, err := parseFramePayload(frame)
 	if err != nil {
 		c.logger.InfoContext(ctx, "infoflow: dropped non-payload frame", "error", err)
 		return nil
 	}
+	return c.processFrame(ctx, raw)
+}
+
+// handleFrameQueued is the WebSocket read-loop entry. It only parses the payload
+// and derives the conversation key, then returns; normalization (which may call
+// the group member list) and the quoted-message lookup run on the bounded
+// workers, so the read loop never waits for either (DEC7).
+func (c *infoflowChannel) handleFrameQueued(ctx context.Context, frame Frame) error {
+	raw, err := parseFramePayload(frame)
+	if err != nil {
+		c.logger.InfoContext(ctx, "infoflow: dropped non-payload frame", "error", err)
+		return nil
+	}
+	if c.workers == nil {
+		return c.processFrame(ctx, raw)
+	}
+	c.workers.enqueue(chatKeyFromRaw(raw), func() {
+		if err := c.processFrame(ctx, raw); err != nil {
+			c.logger.WarnContext(ctx, "infoflow: inbound delivery failed", "error", err)
+		}
+	})
+	return nil
+}
+
+// processFrame normalizes one payload, resolves a selected quote and invokes the
+// handler. It never returns an error for a payload it cannot use.
+func (c *infoflowChannel) processFrame(ctx context.Context, raw json.RawMessage) error {
 	// Enrich the self-identity set with the group-scoped identity before
 	// normalization: InfoFlow's group AT element usually carries only
 	// the robot's DISPLAY NAME, which the configured id cannot match.
@@ -122,6 +157,39 @@ func (c *infoflowChannel) handleFrame(ctx context.Context, frame Frame) error {
 		)
 		return nil
 	}
+	return c.deliver(ctx, msg, raw, self)
+}
+
+// chatKeyFromRaw derives the conversation id before normalization so the queue
+// can keep per-chat order without waiting for the group identity lookup.
+func chatKeyFromRaw(raw json.RawMessage) string {
+	var payload struct {
+		GroupID    string `json:"groupid"`
+		FromUserID string `json:"FromUserId"`
+		Message    *struct {
+			Header *struct {
+				FromUserID string `json:"fromuserid"`
+			} `json:"header"`
+		} `json:"message"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return ""
+	}
+	if key := strings.TrimSpace(payload.GroupID); key != "" {
+		return key
+	}
+	if key := strings.TrimSpace(payload.FromUserID); key != "" {
+		return key
+	}
+	if payload.Message != nil && payload.Message.Header != nil {
+		return strings.TrimSpace(payload.Message.Header.FromUserID)
+	}
+	return ""
+}
+
+// deliver resolves the quoted message (when selected) and invokes the handler.
+// It runs on a worker goroutine in production, preserving per-chat order.
+func (c *infoflowChannel) deliver(ctx context.Context, msg channel.InboundMessage, raw json.RawMessage, self identitySet) error {
 	if msg.HasSelectedContext && c.quoteEnricher != nil {
 		msg = c.enrichQuoteOrigin(ctx, msg, raw, self)
 	}
