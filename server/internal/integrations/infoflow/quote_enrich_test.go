@@ -1,6 +1,7 @@
 package infoflow
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -8,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -481,5 +483,264 @@ func TestChannelHandleFrameQuoteWithoutSenderMakesNoRequest(t *testing.T) {
 	}
 	if !strings.Contains(string(got.Raw), `"state":"skipped"`) {
 		t.Fatalf("Raw must record the skipped origin: %s", got.Raw)
+	}
+}
+
+// bodyQuoteRaw builds the live N88 shape: the selected quote is a body element.
+func bodyQuoteRaw(quoteFields string, own string) json.RawMessage {
+	return json.RawMessage(`{"groupid":"12572761","message":{"header":{"fromuserid":"wangjianghua","toid":"12572761","totype":"GROUP","msgtype":"MIXED","messageid":"m9"},"body":[{"type":"AT","atuserids":["4100104388"]},{"type":"QUOTE",` + quoteFields + `},{"type":"TEXT","content":"` + own + `"}]}}`)
+}
+
+// TestChannelHandleFrameEnrichesBodyQuote is A28 end to end: a body QUOTE element
+// with messageid/fromuserid triggers getSingleMsg and is replaced by the full
+// text while the main message survives.
+func TestChannelHandleFrameEnrichesBodyQuote(t *testing.T) {
+	full := strings.Repeat("完整引用正文", 300)
+	gw := &quoteGateway{message: func(_ int, w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"code":"ok","data":{"code":200,"message":"ok","data":{"items":[{"msgId":"m8","msgType":"text","content":"` + full + `"}]}}}`))
+	}}
+	srv := gw.start(t)
+	raw := bodyQuoteRaw(`"content":"逐张建成独..","messageid":"m8","fromuserid":"u-quoted"`, "能看到这里的内容么？")
+
+	var got channel.InboundMessage
+	ch := &infoflowChannel{
+		appID:         "14534",
+		appKey:        "app-key",
+		appSecret:     "app-secret",
+		botUserID:     "4100104388",
+		client:        NewClient(srv.Client(), srv.URL),
+		quoteEnricher: newQuoteEnricher(NewClient(srv.Client(), srv.URL), discardLogger()),
+		logger:        discardLogger(),
+		handler: func(_ context.Context, msg channel.InboundMessage) error {
+			got = msg
+			return nil
+		},
+	}
+	if err := ch.handleFrame(context.Background(), Frame{Method: FrameData, Payload: raw}); err != nil {
+		t.Fatalf("handleFrame: %v", err)
+	}
+	for _, want := range []string{quoteTagFull, full, "能看到这里的内容么？"} {
+		if !strings.Contains(got.Text, want) {
+			t.Fatalf("Text missing %q: %s", want, got.Text)
+		}
+	}
+	if strings.Contains(got.Text, "逐张建成独..") {
+		t.Fatalf("truncated preview must be replaced: %s", got.Text)
+	}
+	if !got.HasSelectedContext || got.ReplyTo == nil || got.ReplyTo.MessageID != "m8" {
+		t.Fatalf("selected context regression: %+v", got)
+	}
+	if !strings.Contains(string(got.Raw), `"state":"ok"`) {
+		t.Fatalf("Raw must carry ok origin: %s", got.Raw)
+	}
+	query := gw.lastQuery
+	for key, want := range map[string]string{"fromId": "u-quoted", "receiverId": "12572761", "receiverType": "2", "msgId": "m8"} {
+		if query.Get(key) != want {
+			t.Fatalf("%s = %q, want %q", key, query.Get(key), want)
+		}
+	}
+}
+
+// TestChannelHandleFrameBodyQuoteWithoutPreviewRecoversFullText: even when the
+// body element has only ids, the lookup result must still render the quote.
+func TestChannelHandleFrameBodyQuoteWithoutPreviewRecoversFullText(t *testing.T) {
+	full := strings.Repeat("无预览的引用全文", 20)
+	gw := &quoteGateway{message: func(_ int, w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"code":"ok","data":{"code":200,"data":{"items":[{"msgId":"m8","content":"` + full + `"}]}}}`))
+	}}
+	srv := gw.start(t)
+	raw := bodyQuoteRaw(`"messageid":"m8","fromuserid":"u-quoted"`, "我的问题")
+
+	var got channel.InboundMessage
+	ch := &infoflowChannel{
+		appID:         "14534",
+		appKey:        "app-key",
+		appSecret:     "app-secret",
+		botUserID:     "4100104388",
+		client:        NewClient(srv.Client(), srv.URL),
+		quoteEnricher: newQuoteEnricher(NewClient(srv.Client(), srv.URL), discardLogger()),
+		logger:        discardLogger(),
+		handler: func(_ context.Context, msg channel.InboundMessage) error {
+			got = msg
+			return nil
+		},
+	}
+	if err := ch.handleFrame(context.Background(), Frame{Method: FrameData, Payload: raw}); err != nil {
+		t.Fatalf("handleFrame: %v", err)
+	}
+	for _, want := range []string{quoteTagFull, full, "我的问题"} {
+		if !strings.Contains(got.Text, want) {
+			t.Fatalf("Text missing %q: %s", want, got.Text)
+		}
+	}
+}
+
+// TestChannelHandleFrameBodyQuoteEmptyItemsIsNotFound: items:null must classify
+// as not_found (truncated label), never as ok with empty text (DEC16).
+func TestChannelHandleFrameBodyQuoteEmptyItemsIsNotFound(t *testing.T) {
+	gw := &quoteGateway{message: func(_ int, w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"code":"ok","data":{"code":200,"message":"ok","data":{"items":null}}}`))
+	}}
+	srv := gw.start(t)
+	raw := bodyQuoteRaw(`"content":"已过期引用的预览","messageid":"m8","fromuserid":"u-quoted"`, "主消息")
+
+	var got channel.InboundMessage
+	ch := &infoflowChannel{
+		appID:         "14534",
+		appKey:        "app-key",
+		appSecret:     "app-secret",
+		botUserID:     "4100104388",
+		client:        NewClient(srv.Client(), srv.URL),
+		quoteEnricher: newQuoteEnricher(NewClient(srv.Client(), srv.URL), discardLogger()),
+		logger:        discardLogger(),
+		handler: func(_ context.Context, msg channel.InboundMessage) error {
+			got = msg
+			return nil
+		},
+	}
+	if err := ch.handleFrame(context.Background(), Frame{Method: FrameData, Payload: raw}); err != nil {
+		t.Fatalf("handleFrame: %v", err)
+	}
+	for _, want := range []string{quoteTagTruncated, "已过期引用的预览", "主消息"} {
+		if !strings.Contains(got.Text, want) {
+			t.Fatalf("Text missing %q: %s", want, got.Text)
+		}
+	}
+	if !strings.Contains(string(got.Raw), `"state":"not_found"`) {
+		t.Fatalf("Raw must record not_found: %s", got.Raw)
+	}
+}
+
+// TestChannelHandleFrameBodyQuoteBusinessCodes maps data.code 720001/720027 to
+// denied/invalid_param and keeps the preview plus the main message.
+func TestChannelHandleFrameBodyQuoteBusinessCodes(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		code  int
+		state string
+	}{
+		{name: "denied", code: 720001, state: "denied"},
+		{name: "invalid_param", code: 720027, state: "invalid_param"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			gw := &quoteGateway{message: func(_ int, w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(`{"code":"ok","data":{"code":` + strconv.Itoa(tc.code) + `,"message":"business failure"}}`))
+			}}
+			srv := gw.start(t)
+			raw := bodyQuoteRaw(`"content":"业务错误预览","messageid":"m8","fromuserid":"u-quoted"`, "主消息")
+
+			var got channel.InboundMessage
+			ch := &infoflowChannel{
+				appID:         "14534",
+				appKey:        "app-key",
+				appSecret:     "app-secret",
+				botUserID:     "4100104388",
+				client:        NewClient(srv.Client(), srv.URL),
+				quoteEnricher: newQuoteEnricher(NewClient(srv.Client(), srv.URL), discardLogger()),
+				logger:        discardLogger(),
+				handler: func(_ context.Context, msg channel.InboundMessage) error {
+					got = msg
+					return nil
+				},
+			}
+			if err := ch.handleFrame(context.Background(), Frame{Method: FrameData, Payload: raw}); err != nil {
+				t.Fatalf("handleFrame: %v", err)
+			}
+			for _, want := range []string{quoteTagPreview, "业务错误预览", "主消息"} {
+				if !strings.Contains(got.Text, want) {
+					t.Fatalf("Text missing %q: %s", want, got.Text)
+				}
+			}
+			if !strings.Contains(string(got.Raw), `"state":"`+tc.state+`"`) {
+				t.Fatalf("Raw must record %s: %s", tc.state, got.Raw)
+			}
+		})
+	}
+}
+
+// TestChannelHandleFrameBodyQuoteWithoutSenderMakesNoRequest: DEC6 still holds
+// for the body shape — no quoted author means zero HTTP, preview only.
+func TestChannelHandleFrameBodyQuoteWithoutSenderMakesNoRequest(t *testing.T) {
+	gw := &quoteGateway{message: func(_ int, w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"code":"ok","data":{"code":200,"data":{"items":[{"content":"must not fetch"}]}}}`))
+	}}
+	srv := gw.start(t)
+	raw := bodyQuoteRaw(`"content":"只有预览的引用","messageid":"m8"`, "主消息")
+
+	var got channel.InboundMessage
+	ch := &infoflowChannel{
+		appID:         "14534",
+		appKey:        "app-key",
+		appSecret:     "app-secret",
+		botUserID:     "4100104388",
+		client:        NewClient(srv.Client(), srv.URL),
+		quoteEnricher: newQuoteEnricher(NewClient(srv.Client(), srv.URL), discardLogger()),
+		logger:        discardLogger(),
+		handler: func(_ context.Context, msg channel.InboundMessage) error {
+			got = msg
+			return nil
+		},
+	}
+	if err := ch.handleFrame(context.Background(), Frame{Method: FrameData, Payload: raw}); err != nil {
+		t.Fatalf("handleFrame: %v", err)
+	}
+	if token, message := gw.calls(); token != 0 || message != 0 {
+		t.Fatalf("no HTTP expected, token=%d message=%d", token, message)
+	}
+	for _, want := range []string{quoteTagPreview, "只有预览的引用", "主消息"} {
+		if !strings.Contains(got.Text, want) {
+			t.Fatalf("Text missing %q: %s", want, got.Text)
+		}
+	}
+}
+
+// TestProcessFrameLogsRedactedShape is A29: the shape line names types/keys but
+// leaks no content, URL or user id.
+func TestProcessFrameLogsRedactedShape(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, nil))
+	ch := &infoflowChannel{
+		appID:  "14534",
+		logger: logger,
+		handler: func(_ context.Context, _ channel.InboundMessage) error {
+			return nil
+		},
+	}
+	frameWithQuote := json.RawMessage(`{"groupid":"G1","message":{"header":{"fromuserid":"SECRET-USER","toid":"G1","messageid":"M9"},"body":[{"type":"AT","atuserids":["SECRET-USER"]},{"type":"TEXT","content":"SECRET-CONTENT"},{"type":"IMAGE","downloadurl":"https://secret.example/x.png"},{"type":"QUOTE","content":"SECRET-PREVIEW","messageid":"M8","fromuserid":"SECRET-QUOTED","header":{"fromuserid":"SECRET-QUOTED"}}]}}`)
+	frameWithReply := json.RawMessage(`{"groupid":"G1","message":{"header":{"fromuserid":"SECRET-USER","toid":"G1","messageid":"M10"},"reply":{"messageid":"M11","preview":"SECRET-REPLY"},"body":[{"type":"TEXT","content":"SECRET-OTHER"}]}}`)
+	for _, raw := range []json.RawMessage{frameWithQuote, frameWithReply} {
+		if err := ch.processFrame(context.Background(), raw); err != nil {
+			t.Fatalf("processFrame: %v", err)
+		}
+	}
+	logged := buf.String()
+	for _, secret := range []string{"SECRET-CONTENT", "SECRET-PREVIEW", "secret.example", "SECRET-USER", "SECRET-QUOTED", "SECRET-REPLY", "SECRET-OTHER"} {
+		if strings.Contains(logged, secret) {
+			t.Fatalf("log leaked %q: %s", secret, logged)
+		}
+	}
+	lines := strings.Split(strings.TrimSpace(logged), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("want one shape line per frame, got %d: %s", len(lines), logged)
+	}
+	var first map[string]any
+	if err := json.Unmarshal([]byte(lines[0]), &first); err != nil {
+		t.Fatalf("decode log: %v", err)
+	}
+	if first["body_types"] == nil || first["body_keys"] == nil || first["quote_element_fields"] == nil {
+		t.Fatalf("shape fields missing: %v", first)
+	}
+	if first["reply_present"] != false || first["quote_present"] != false || first["chat_type"] != "group" {
+		t.Fatalf("shape flags wrong: %v", first)
+	}
+	if fields, _ := first["quote_element_fields"].([]any); len(fields) == 0 {
+		t.Fatalf("quote_element_fields empty: %v", first)
+	}
+	var second map[string]any
+	if err := json.Unmarshal([]byte(lines[1]), &second); err != nil {
+		t.Fatalf("decode log: %v", err)
+	}
+	if second["reply_present"] != true {
+		t.Fatalf("reply_present must be true: %v", second)
 	}
 }

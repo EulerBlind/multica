@@ -49,12 +49,13 @@ const (
 type quoteOriginState string
 
 const (
-	quoteStateOK          quoteOriginState = "ok"
-	quoteStateDenied      quoteOriginState = "denied"
-	quoteStateNotFound    quoteOriginState = "not_found"
-	quoteStateTimeout     quoteOriginState = "timeout"
-	quoteStateUnavailable quoteOriginState = "unavailable"
-	quoteStateSkipped     quoteOriginState = "skipped"
+	quoteStateOK           quoteOriginState = "ok"
+	quoteStateDenied       quoteOriginState = "denied"
+	quoteStateNotFound     quoteOriginState = "not_found"
+	quoteStateInvalidParam quoteOriginState = "invalid_param"
+	quoteStateTimeout      quoteOriginState = "timeout"
+	quoteStateUnavailable  quoteOriginState = "unavailable"
+	quoteStateSkipped      quoteOriginState = "skipped"
 )
 
 // quoteQuery is the getSingleMsg request shape. MsgID and ReceiverID stay
@@ -223,6 +224,14 @@ func (e *quoteEnricher) lookup(ctx context.Context, req quoteEnrichRequest) *quo
 				CreateTime: detail.CreateTime,
 			}
 		}
+		var notFound *quoteNotFoundError
+		if errors.As(err, &notFound) && e.logger != nil {
+			// Shapes only: no content, URL or user id may enter the log.
+			e.logger.Info("infoflow quote origin: not found",
+				"app_id", req.AppID,
+				"response_skeleton", notFound.Skeleton,
+			)
+		}
 	}
 
 	state, message := classifyQuoteError(err)
@@ -291,6 +300,10 @@ func classifyQuoteError(err error) (quoteOriginState, string) {
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		return quoteStateTimeout, message
 	}
+	var notFound *quoteNotFoundError
+	if errors.As(err, &notFound) {
+		return quoteStateNotFound, message
+	}
 	if IsPermissionNotGranted(err) {
 		return quoteStateDenied, message
 	}
@@ -299,6 +312,10 @@ func classifyQuoteError(err error) (quoteOriginState, string) {
 		switch {
 		case apiErr.StatusCode == 404:
 			return quoteStateNotFound, message
+		case apiErr.Code == errCodeQuoteDenied:
+			return quoteStateDenied, message
+		case apiErr.Code == errCodeQuoteInvalidParam:
+			return quoteStateInvalidParam, message
 		case apiErr.Code == errCodeAPINotAllowed:
 			return quoteStateDenied, message
 		default:
@@ -381,6 +398,10 @@ func quoteForPayload(payload infoflowRaw) *infoflowQuote {
 		}
 		if payload.Message.Quote != nil {
 			return payload.Message.Quote
+		}
+		// N88: the live gateway carries a selected quote as a body element.
+		if q := quoteFromBody(payload.Message.Body); q != nil {
+			return q
 		}
 	}
 	return payload.Quote

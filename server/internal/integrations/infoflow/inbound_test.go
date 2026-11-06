@@ -262,3 +262,168 @@ func TestFlattenQuotedKeepsBodyTextWithoutOrigin(t *testing.T) {
 		t.Fatalf("body text must survive an unresolved lookup: %s", got)
 	}
 }
+
+// TestInboundGroupBodyQuoteIsSelectedContext is the N88 live shape: the selected
+// quote arrives as a body element, not as message.reply/quote. It must produce
+// the quoted envelope, set selected context and keep the sender's own text.
+func TestInboundGroupBodyQuoteIsSelectedContext(t *testing.T) {
+	raw := `{"groupid":"12572761","message":{"header":{"fromuserid":"wangjianghua","toid":"12572761","totype":"GROUP","msgtype":"MIXED","messageid":"m9"},"body":[{"type":"AT","atuserids":["4100104388"]},{"type":"QUOTE","content":"逐张建成独..","messageid":"m8","fromuserid":"u-quoted","body":[{"type":"IMAGE","downloadurl":"https://example.com/q.png"}]},{"type":"TEXT","content":"能看到这里的内容么？"}]}}`
+	msg, ok := inboundFromPayload(json.RawMessage(raw), "8682", "4100104388")
+	if !ok {
+		t.Fatal("expected ok")
+	}
+	if !msg.HasSelectedContext {
+		t.Fatalf("body quote must set HasSelectedContext: %+v", msg)
+	}
+	if msg.ReplyTo == nil || msg.ReplyTo.MessageID != "m8" {
+		t.Fatalf("ReplyTo = %+v, want m8", msg.ReplyTo)
+	}
+	if !strings.Contains(msg.Text, "<quoted_message>") || !strings.Contains(msg.Text, "</quoted_message>") {
+		t.Fatalf("missing quoted envelope: %s", msg.Text)
+	}
+	for _, want := range []string{"逐张建成独..", "[IMAGE] https://example.com/q.png", "能看到这里的内容么？"} {
+		if !strings.Contains(msg.Text, want) {
+			t.Fatalf("Text missing %q: %s", want, msg.Text)
+		}
+	}
+	if strings.Count(msg.Text, "逐张建成独..") != 1 {
+		t.Fatalf("quote preview must not be duplicated in own text: %s", msg.Text)
+	}
+	if msg.CommandText != "能看到这里的内容么？" {
+		t.Fatalf("CommandText = %q", msg.CommandText)
+	}
+}
+
+// TestInboundGroupBodyQuoteToleratesNestedFieldNames covers DEC15: the live
+// field names are unknown, so a nested quote object with camelCase ids works.
+func TestInboundGroupBodyQuoteToleratesNestedFieldNames(t *testing.T) {
+	raw := `{"groupid":"G1","message":{"header":{"fromuserid":"U1","toid":"G1","totype":"GROUP","messageid":"M9"},"body":[{"type":"quote","quote":{"messageId":"M8","fromUserId":"U-QUOTED","content":"嵌套预览"},"body":[{"type":"TEXT","content":"正文"}]}]}}`
+	msg, ok := inboundFromPayload(json.RawMessage(raw), "8682", "BOT")
+	if !ok {
+		t.Fatalf("expected ok: %+v", msg)
+	}
+	if !msg.HasSelectedContext || msg.ReplyTo == nil || msg.ReplyTo.MessageID != "M8" {
+		t.Fatalf("nested quote not parsed: %+v", msg)
+	}
+	if strings.Count(msg.Text, "嵌套预览") != 1 || !strings.Contains(msg.Text, "正文") {
+		t.Fatalf("Text = %q", msg.Text)
+	}
+	if quote := quoteForPayload(infoflowRaw{Message: &infoflowEventMessage{Body: []map[string]any{{"type": "QUOTE", "messageid": "M8", "fromuserid": "U-QUOTED"}}}}); quote == nil || quoteFromID(quote) != "U-QUOTED" {
+		t.Fatalf("quote sender not extracted: %+v", quote)
+	}
+}
+
+// TestInboundGroupBodyQuoteWithoutIDsKeepsPreview: no messageid/fromuserid means
+// no lookup (DEC6), but the preview and the main text must survive.
+func TestInboundGroupBodyQuoteWithoutIDsKeepsPreview(t *testing.T) {
+	raw := `{"groupid":"G1","message":{"header":{"fromuserid":"U1","toid":"G1","messageid":"M9"},"body":[{"type":"AT","atuserids":["BOT"]},{"type":"REFERENCE","content":"只有截断预览.."},{"type":"TEXT","content":"我的问题"}]}}`
+	msg, ok := inboundFromPayload(json.RawMessage(raw), "8682", "BOT")
+	if !ok {
+		t.Fatal("expected ok")
+	}
+	if !msg.HasSelectedContext || msg.ReplyTo != nil {
+		t.Fatalf("preview-only quote state: %+v", msg)
+	}
+	for _, want := range []string{"<quoted_message>", "只有截断预览..", "我的问题"} {
+		if !strings.Contains(msg.Text, want) {
+			t.Fatalf("Text missing %q: %s", want, msg.Text)
+		}
+	}
+}
+
+// TestInboundGroupBodyQuoteDoesNotAddressBot: a quote element is not an @ or a
+// reply to the bot, so ordinary group chatter stays unaddressed (fail closed).
+func TestInboundGroupBodyQuoteDoesNotAddressBot(t *testing.T) {
+	raw := `{"groupid":"G1","message":{"header":{"fromuserid":"U1","toid":"G1","messageid":"M9"},"body":[{"type":"QUOTE","content":"引用","messageid":"M8","fromuserid":"U2"},{"type":"TEXT","content":"普通群聊"}]}}`
+	msg, ok := inboundFromPayload(json.RawMessage(raw), "8682", "BOT")
+	if !ok {
+		t.Fatal("expected ok")
+	}
+	if msg.AddressedToBot {
+		t.Fatalf("body quote must not address the bot: %+v", msg)
+	}
+}
+
+// TestInboundGroupBodyQuoteToBotAddresses: quoting the bot itself is a reply to
+// the bot and must not need a separate AT.
+func TestInboundGroupBodyQuoteToBotAddresses(t *testing.T) {
+	raw := `{"groupid":"G1","message":{"header":{"fromuserid":"U1","toid":"G1","messageid":"M9"},"body":[{"type":"QUOTE","content":"机器人上一条","messageid":"M8","fromuserid":"BOT"},{"type":"TEXT","content":"继续"}]}}`
+	msg, ok := inboundFromPayload(json.RawMessage(raw), "8682", "BOT")
+	if !ok {
+		t.Fatal("expected ok")
+	}
+	if !msg.AddressedToBot {
+		t.Fatalf("quote of the bot must address it: %+v", msg)
+	}
+}
+
+// TestFlattenBodyTextBranches covers every element branch plus the own-vs-quoted
+// quote policy introduced by N88.
+func TestFlattenBodyTextBranches(t *testing.T) {
+	body := []map[string]any{
+		nil,
+		{"type": "AT"},
+		{"type": "TEXT", "content": "文本"},
+		{"type": "IMAGE", "downloadurl": "https://example.com/i.png"},
+		{"type": "IMAGE"},
+		{"type": "FILE", "name": "f.txt", "url": "https://example.com/f.txt"},
+		{"type": "FILE"},
+		{"type": "LINK", "label": "链接"},
+		{"type": "QUOTE", "content": "引用内容", "body": []map[string]any{{"type": "TEXT", "content": "内层"}}},
+		{"type": "REPLY", "content": "引用内容"},
+		{"type": "UNKNOWN", "content": "未知"},
+	}
+	own := flattenOwnText(body)
+	for _, want := range []string{"文本", "[IMAGE] https://example.com/i.png", "[IMAGE]", "[FILE: f.txt]", "[FILE: ]", "链接: 链接", "未知"} {
+		if !strings.Contains(own, want) {
+			t.Fatalf("own missing %q: %s", want, own)
+		}
+	}
+	for _, unwanted := range []string{"引用内容", "内层"} {
+		if strings.Contains(own, unwanted) {
+			t.Fatalf("own must skip quote elements, found %q: %s", unwanted, own)
+		}
+	}
+	full := flattenGroupText(body)
+	for _, want := range []string{"引用内容", "内层"} {
+		if !strings.Contains(full, want) {
+			t.Fatalf("quoted body missing %q: %s", want, full)
+		}
+	}
+}
+
+// TestScalarStringBranches covers the JSON scalar shapes used by DEC15 field
+// extraction.
+func TestScalarStringBranches(t *testing.T) {
+	for _, tc := range []struct {
+		in   any
+		want string
+	}{
+		{in: " text ", want: "text"},
+		{in: float64(12572761), want: "12572761"},
+		{in: 42, want: "42"},
+		{in: json.Number("123"), want: "123"},
+		{in: nil, want: ""},
+		{in: map[string]any{"x": 1}, want: ""},
+	} {
+		if got := scalarString(tc.in); got != tc.want {
+			t.Fatalf("scalarString(%v) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// TestInboundGroupBodyQuoteIDOnlySelectsContext: a body quote with only
+// messageid/fromuserid and no preview must still enter the lookup path.
+func TestInboundGroupBodyQuoteIDOnlySelectsContext(t *testing.T) {
+	raw := `{"groupid":"G1","message":{"header":{"fromuserid":"U1","toid":"G1","messageid":"M9"},"body":[{"type":"AT","atuserids":["BOT"]},{"type":"QUOTE","messageid":"M8","fromuserid":"U-QUOTED"},{"type":"TEXT","content":"我的问题"}]}}`
+	msg, ok := inboundFromPayload(json.RawMessage(raw), "8682", "BOT")
+	if !ok {
+		t.Fatal("expected ok")
+	}
+	if !msg.HasSelectedContext || msg.ReplyTo == nil || msg.ReplyTo.MessageID != "M8" {
+		t.Fatalf("id-only body quote must be selected: %+v", msg)
+	}
+	if strings.Contains(msg.Text, "<quoted_message>") {
+		t.Fatalf("no preview yet, envelope should appear only after lookup: %s", msg.Text)
+	}
+}

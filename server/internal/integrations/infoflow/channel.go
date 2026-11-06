@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 
 	"github.com/multica-ai/multica/server/internal/integrations/channel"
@@ -131,6 +132,7 @@ func (c *infoflowChannel) handleFrameQueued(ctx context.Context, frame Frame) er
 // processFrame normalizes one payload, resolves a selected quote and invokes the
 // handler. It never returns an error for a payload it cannot use.
 func (c *infoflowChannel) processFrame(ctx context.Context, raw json.RawMessage) error {
+	c.logInboundShape(ctx, raw)
 	// Enrich the self-identity set with the group-scoped identity before
 	// normalization: InfoFlow's group AT element usually carries only
 	// the robot's DISPLAY NAME, which the configured id cannot match.
@@ -158,6 +160,100 @@ func (c *infoflowChannel) processFrame(ctx context.Context, raw json.RawMessage)
 		return nil
 	}
 	return c.deliver(ctx, msg, raw, self)
+}
+
+// logInboundShape records one redacted shape line per inbound frame so the live
+// payload can be identified without another blind round-trip (N88/A29). Only
+// type names, key names and presence flags are logged: never content, URLs,
+// user ids or full message objects.
+func (c *infoflowChannel) logInboundShape(ctx context.Context, raw json.RawMessage) {
+	if c.logger == nil {
+		return
+	}
+	var payload infoflowRaw
+	_ = json.Unmarshal(raw, &payload)
+	chatType := "p2p"
+	headerID := anyString(payload.MsgID)
+	replyPresent, quotePresent := false, false
+	var body []map[string]any
+	if payload.Message != nil {
+		chatType = "p2p"
+		if payload.GroupID != nil || payload.Message.Header.ToID != nil {
+			chatType = "group"
+		}
+		headerID = anyString(payload.Message.Header.MessageID)
+		body = payload.Message.Body
+		replyPresent = payload.Message.Reply != nil
+		quotePresent = payload.Message.Quote != nil
+	}
+
+	bodyTypes := make([]string, 0, len(body))
+	keysByType := map[string][]string{}
+	seenType := map[string]bool{}
+	for _, item := range body {
+		if item == nil {
+			continue
+		}
+		typeName := strings.ToUpper(stringOrEmpty(item["type"]))
+		if typeName == "" {
+			typeName = "UNKNOWN"
+		}
+		if !seenType[typeName] {
+			seenType[typeName] = true
+			bodyTypes = append(bodyTypes, typeName)
+		}
+		for key := range item {
+			if !containsString(keysByType[typeName], key) {
+				keysByType[typeName] = append(keysByType[typeName], key)
+			}
+		}
+	}
+	sort.Strings(bodyTypes)
+	for typeName := range keysByType {
+		sort.Strings(keysByType[typeName])
+	}
+
+	quoteFields := []string{}
+	if element := quoteElementFromBody(body); element != nil {
+		quoteFields = shapeFields(element, "")
+		sort.Strings(quoteFields)
+	}
+
+	c.logger.InfoContext(ctx, "infoflow: inbound frame shape",
+		"chat_type", chatType,
+		"header_messageid", headerID,
+		"reply_present", replyPresent,
+		"quote_present", quotePresent,
+		"body_types", bodyTypes,
+		"body_keys", keysByType,
+		"quote_element_fields", quoteFields,
+	)
+}
+
+// shapeFields lists key names, prefixing one level of nested objects with
+// "parent.". It never reads a value, so no content/URL/user id can leak.
+func shapeFields(m map[string]any, prefix string) []string {
+	fields := make([]string, 0, len(m))
+	for key, value := range m {
+		fields = append(fields, prefix+key)
+		nested, ok := value.(map[string]any)
+		if !ok || prefix != "" {
+			continue
+		}
+		for nestedKey := range nested {
+			fields = append(fields, key+"."+nestedKey)
+		}
+	}
+	return fields
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 // chatKeyFromRaw derives the conversation id before normalization so the queue

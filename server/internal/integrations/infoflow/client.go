@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -44,6 +45,11 @@ const (
 	// outbound path can chunk instead of silently dropping.
 	errCodeBodyTooLong = 40060
 	errCodeTextTooLong = 40061
+	// errCodeQuoteDenied / errCodeQuoteInvalidParam are the getSingleMsg
+	// business codes observed on the live gateway (N88). They arrive as
+	// data.code, not data.errcode.
+	errCodeQuoteDenied       = 720001
+	errCodeQuoteInvalidParam = 720027
 )
 
 // ErrPermissionNotGranted marks a business error caused by a missing
@@ -280,13 +286,113 @@ func (c *Client) getMessage(ctx context.Context, token string, q quoteQuery) (qu
 	query.Set("receiverId", q.ReceiverID)
 	query.Set("receiverType", strconv.Itoa(q.ReceiverType))
 	query.Set("msgId", q.MsgID)
-	var resp struct {
-		Data quoteMessageDetail `json:"data"`
-	}
-	if err := c.getJSON(ctx, "/im/message/getSingleMsg", token, query, &resp); err != nil {
+	// Keep the raw response so a not-found result can log a redacted skeleton
+	// (key names and JSON types only) instead of guessing the live shape.
+	var raw json.RawMessage
+	if err := c.getJSON(ctx, "/im/message/getSingleMsg", token, query, &raw); err != nil {
 		return quoteMessageDetail{}, err
 	}
-	return resp.Data, nil
+	var resp quoteMessageResponse
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return quoteMessageDetail{}, fmt.Errorf("infoflow: decode getSingleMsg payload: %w", err)
+	}
+	detail, ok := resp.detail()
+	if !ok {
+		return quoteMessageDetail{}, &quoteNotFoundError{Skeleton: redactedJSONSkeleton(raw)}
+	}
+	return detail, nil
+}
+
+// quoteMessageResponse covers both getSingleMsg success shapes: the live
+// data.data.items[] envelope and the legacy flat data{msgId,content,...}. An
+// empty items list or a missing content is a not-found, not a success with
+// empty text (DEC16).
+type quoteMessageResponse struct {
+	Code string `json:"code"`
+	Data struct {
+		Code    json.RawMessage `json:"code"`
+		Message string          `json:"message"`
+		Errcode int             `json:"errcode"`
+		Errmsg  string          `json:"errmsg"`
+		Data    *struct {
+			Items []quoteMessageDetail `json:"items"`
+		} `json:"data"`
+		quoteMessageDetail
+	} `json:"data"`
+}
+
+func (r quoteMessageResponse) detail() (quoteMessageDetail, bool) {
+	if r.Data.Data != nil {
+		if len(r.Data.Data.Items) == 0 {
+			return quoteMessageDetail{}, false
+		}
+		detail := r.Data.Data.Items[0]
+		if strings.TrimSpace(detail.Content) == "" {
+			return quoteMessageDetail{}, false
+		}
+		return detail, true
+	}
+	if strings.TrimSpace(r.Data.Content) == "" {
+		return quoteMessageDetail{}, false
+	}
+	return r.Data.quoteMessageDetail, true
+}
+
+// quoteNotFoundError carries a redacted response skeleton for the not-found log.
+type quoteNotFoundError struct {
+	Skeleton string
+}
+
+func (e *quoteNotFoundError) Error() string {
+	return "infoflow: getSingleMsg returned no usable message"
+}
+
+// redactedJSONSkeleton renders key names and JSON types only; no string value
+// (content, URL, user id) can leak through this helper.
+func redactedJSONSkeleton(raw []byte) string {
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return "invalid_json"
+	}
+	skeleton := jsonSkeleton(value, 0)
+	if len(skeleton) > 600 {
+		skeleton = skeleton[:600] + "…"
+	}
+	return skeleton
+}
+
+func jsonSkeleton(value any, depth int) string {
+	if depth > 5 {
+		return "…"
+	}
+	switch typed := value.(type) {
+	case map[string]any:
+		keys := make([]string, 0, len(typed))
+		for key := range typed {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		parts := make([]string, 0, len(keys))
+		for _, key := range keys {
+			parts = append(parts, key+":"+jsonSkeleton(typed[key], depth+1))
+		}
+		return "{" + strings.Join(parts, ",") + "}"
+	case []any:
+		if len(typed) == 0 {
+			return "[]"
+		}
+		return "[" + jsonSkeleton(typed[0], depth+1) + "]"
+	case string:
+		return "string"
+	case float64:
+		return "number"
+	case bool:
+		return "bool"
+	case nil:
+		return "null"
+	default:
+		return "unknown"
+	}
 }
 
 // doJSON performs the request and classifies transport, envelope and business
@@ -338,17 +444,43 @@ func decodeBusinessError(path string, envelope businessEnvelope) error {
 		return nil
 	}
 	var inner struct {
-		Errcode int    `json:"errcode"`
-		Errmsg  string `json:"errmsg"`
+		Errcode int             `json:"errcode"`
+		Errmsg  string          `json:"errmsg"`
+		Code    json.RawMessage `json:"code"`
+		Message string          `json:"message"`
 	}
 	if err := json.Unmarshal(envelope.Data, &inner); err != nil {
 		// Not the {errcode,errmsg} shape: a success payload, not an error.
 		return nil
 	}
-	if inner.Errcode == 0 {
-		return nil
+	if inner.Errcode != 0 {
+		return classifyBusinessError(path, inner.Errcode, inner.Errmsg)
 	}
-	return classifyBusinessError(path, inner.Errcode, inner.Errmsg)
+	// The live gateway puts getSingleMsg business failures in data.code /
+	// data.message (720001, 720027, ...) with HTTP 200 and top-level code "ok".
+	if code := envelopeCode(inner.Code); code != 0 && code != 200 {
+		return classifyBusinessError(path, code, inner.Message)
+	}
+	return nil
+}
+
+// envelopeCode parses data.code whether it arrives as a number or numeric
+// string; non-numeric values (e.g. "ok") mean "no business code".
+func envelopeCode(raw json.RawMessage) int {
+	if len(raw) == 0 {
+		return 0
+	}
+	var number int
+	if err := json.Unmarshal(raw, &number); err == nil {
+		return number
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		if parsed, err := strconv.Atoi(strings.TrimSpace(text)); err == nil {
+			return parsed
+		}
+	}
+	return 0
 }
 
 func classifyBusinessError(path string, errcode int, errmsg string) error {

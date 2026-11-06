@@ -211,8 +211,18 @@ func normalizeGroupPayloadReasonWithIdentity(payload infoflowRaw, self identityS
 	if senderID == "" {
 		return channel.InboundMessage{}, dropReasonMissingSender, false
 	}
-	own := flattenGroupText(payload.Message.Body)
-	quoted := flattenQuoted(payload.Message, payload.MulticaQuoteOrigin)
+	message := withBodyQuote(payload.Message)
+	own := flattenOwnText(message.Body)
+	quoted := flattenQuoted(message, payload.MulticaQuoteOrigin)
+	// A body quote may carry only messageid/fromuserid and no preview. It must
+	// still enter the lookup path, otherwise the full text can never be
+	// recovered (A28: lookup whenever a messageid is available).
+	hasSelectedContext := quoted != ""
+	if !hasSelectedContext {
+		if q := quoteFromBody(message.Body); q != nil && anyString(q.MessageID) != "" && quoteFromID(q) != "" {
+			hasSelectedContext = true
+		}
+	}
 	text := own
 	if quoted != "" {
 		text = "<quoted_message>\n" + quoted + "\n</quoted_message>"
@@ -242,8 +252,8 @@ func normalizeGroupPayloadReasonWithIdentity(payload infoflowRaw, self identityS
 		Type:               msgTypeFromHeader(h.MsgType),
 		Text:               text,
 		CommandText:        command,
-		HasSelectedContext: quoted != "",
-		ReplyTo:            groupReplyTo(payload.Message),
+		HasSelectedContext: hasSelectedContext,
+		ReplyTo:            groupReplyTo(message),
 		AddressedToBot:     addressedToBot(payload, self, eventType),
 		Raw:                mustJSON(payload),
 	}
@@ -266,6 +276,20 @@ func flattenPrivateText(payload infoflowRaw) string {
 }
 
 func flattenGroupText(body []map[string]any) string {
+	return flattenBodyText(body, true)
+}
+
+// flattenOwnText renders the sender's own body. QUOTE/REPLY/REFERENCE elements
+// are extracted into the quoted block by quoteFromBody instead of being spliced
+// into the main text (N88): otherwise the preview appears twice and no
+// <quoted_message> envelope is produced.
+func flattenOwnText(body []map[string]any) string {
+	return flattenBodyText(body, false)
+}
+
+// flattenBodyText renders body elements. includeQuote keeps the pre-N88 nested
+// quote expansion for quoted bodies (R64); the sender's own body passes false.
+func flattenBodyText(body []map[string]any, includeQuote bool) string {
 	var parts []string
 	for _, item := range body {
 		if item == nil {
@@ -303,7 +327,10 @@ func flattenGroupText(body []map[string]any) string {
 				parts = append(parts, "链接: "+s)
 			}
 		case "QUOTE", "REPLY", "REFERENCE":
-			if nested := flattenGroupText(bodyItems(item["body"])); nested != "" {
+			if !includeQuote {
+				continue
+			}
+			if nested := flattenBodyText(bodyItems(item["body"]), true); nested != "" {
 				parts = append(parts, nested)
 			} else if s := stringOrEmpty(item["content"]); s != "" {
 				parts = append(parts, s)
@@ -345,6 +372,11 @@ func addressedToBot(payload infoflowRaw, self identitySet, eventType string) boo
 	}
 	// A reply to the bot is an explicit signal regardless of @.
 	if payload.Message.Reply != nil || payload.Message.Quote != nil {
+		return true
+	}
+	if q := quoteFromBody(payload.Message.Body); q != nil && self.matches(quoteFromID(q)) {
+		// N88: replying through the quote UI arrives as a body element; quoting
+		// the bot itself still counts as addressing it.
 		return true
 	}
 	for _, item := range payload.Message.Body {
@@ -678,9 +710,143 @@ func groupReplyTo(message *infoflowEventMessage) *channel.ReplyCtx {
 		q = message.Quote
 	}
 	if q == nil {
+		// N88: the live gateway also delivers a selected quote as a body
+		// element (type QUOTE/REPLY/REFERENCE), not as message.reply/quote.
+		q = quoteFromBody(message.Body)
+	}
+	if q == nil {
 		return nil
 	}
-	return &channel.ReplyCtx{MessageID: anyString(q.MessageID)}
+	messageID := anyString(q.MessageID)
+	if messageID == "" {
+		return nil
+	}
+	return &channel.ReplyCtx{MessageID: messageID}
+}
+
+// withBodyQuote promotes a QUOTE/REPLY/REFERENCE body element to a quote
+// envelope. An explicit message.reply/quote wins: the gateway never mirrors the
+// same quote in both places in the observed traffic, and rendering both would
+// duplicate it.
+func withBodyQuote(message *infoflowEventMessage) *infoflowEventMessage {
+	if message == nil || message.Reply != nil || message.Quote != nil {
+		return message
+	}
+	q := quoteFromBody(message.Body)
+	if q == nil {
+		return message
+	}
+	clone := *message
+	clone.Quote = q
+	return &clone
+}
+
+// quoteElementFromBody returns the first body element that carries a selected
+// quote. Type matching is case-insensitive because live labels vary in case.
+func quoteElementFromBody(body []map[string]any) map[string]any {
+	for _, item := range body {
+		if item == nil {
+			continue
+		}
+		switch strings.ToUpper(stringOrEmpty(item["type"])) {
+		case "QUOTE", "REPLY", "REFERENCE":
+			return item
+		}
+	}
+	return nil
+}
+
+// quoteFromBody extracts a quote from a body element. Field names are not
+// documented (R72) and the live sample only shows content, so every lookup is
+// tolerant: direct keys, case variants, and one nested quote/message/header
+// object are checked. Missing ids simply leave the preview-only path (DEC15).
+func quoteFromBody(body []map[string]any) *infoflowQuote {
+	item := quoteElementFromBody(body)
+	if item == nil {
+		return nil
+	}
+	candidates := []map[string]any{item}
+	for _, key := range []string{"quote", "message", "data", "quoteinfo", "reference", "header", "sender"} {
+		if nested := nestedMap(item, key); nested != nil {
+			candidates = append(candidates, nested)
+		}
+	}
+	get := func(keys ...string) string {
+		for _, candidate := range candidates {
+			if v := fieldValue(candidate, keys...); v != nil {
+				if s := scalarString(v); s != "" {
+					return s
+				}
+			}
+		}
+		return ""
+	}
+	q := &infoflowQuote{}
+	q.MessageID = get("messageid", "msgid", "message_id", "msg_id", "quoteid", "quote_id", "id")
+	q.FromUserID = get("fromuserid", "fromid", "from_userid", "from_user_id", "senderid", "sender_id", "userid", "user_id")
+	q.Header.FromUserID = q.FromUserID
+	q.Preview = get("content", "preview", "text", "title", "summary", "desc", "description")
+	for _, candidate := range candidates {
+		if body := bodyItems(fieldValue(candidate, "body", "bodys", "elements")); len(body) > 0 {
+			q.Body = body
+			break
+		}
+	}
+	url := get("downloadurl", "download_url", "url", "picurl", "pic_url", "fileurl", "file_url")
+	if url == "" && len(q.Body) == 0 && strings.HasPrefix(q.Preview, "http") {
+		// A quote whose content is only a media URL: keep the URL as media and
+		// do not render it as a text preview.
+		url = q.Preview
+		q.Preview = ""
+	}
+	if url != "" {
+		q.Body = append(q.Body, map[string]any{"type": "IMAGE", "downloadurl": url})
+	}
+	if q.MessageID == "" && q.Preview == "" && len(q.Body) == 0 {
+		return nil
+	}
+	return q
+}
+
+// nestedMap returns a nested object field by case-insensitive key.
+func nestedMap(m map[string]any, key string) map[string]any {
+	for k, v := range m {
+		if !strings.EqualFold(k, key) {
+			continue
+		}
+		if nested, ok := v.(map[string]any); ok {
+			return nested
+		}
+		return nil
+	}
+	return nil
+}
+
+// fieldValue returns the first case-insensitive matching field.
+func fieldValue(m map[string]any, keys ...string) any {
+	for _, key := range keys {
+		for k, v := range m {
+			if strings.EqualFold(k, key) {
+				return v
+			}
+		}
+	}
+	return nil
+}
+
+// scalarString stringifies scalar JSON values without marshaling maps/slices.
+func scalarString(v any) string {
+	switch t := v.(type) {
+	case string:
+		return strings.TrimSpace(t)
+	case float64:
+		return strings.TrimSpace(fmt.Sprintf("%.0f", t))
+	case int:
+		return strings.TrimSpace(fmt.Sprintf("%d", t))
+	case json.Number:
+		return strings.TrimSpace(t.String())
+	}
+	return ""
 }
 
 func msgTypeFromPrivate(payload infoflowRaw) channel.MsgType {
