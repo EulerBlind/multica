@@ -229,7 +229,7 @@ func TestFlattenQuotedDeduplicatesBodyText(t *testing.T) {
 		Preview:   full[:20] + "…",
 		Content:   full[:30],
 		Body: []map[string]any{
-			{"type": "TEXT", "content": full[:12]},
+			{"type": "TEXT", "content": full[:12] + "…"},
 			{"type": "TEXT", "content": full},
 			{"type": "IMAGE", "downloadurl": "https://example.com/a.png"},
 		},

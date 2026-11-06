@@ -93,6 +93,17 @@ type quoteOrigin struct {
 	ElapsedMS  int64            `json:"elapsed_ms,omitempty"`
 }
 
+// clone returns an independent copy. Enrichment attaches an origin to exactly
+// one frame's Raw (DEC11), so no caller can observe or mutate another message's
+// origin through a shared pointer.
+func (o *quoteOrigin) clone() *quoteOrigin {
+	if o == nil {
+		return nil
+	}
+	cloned := *o
+	return &cloned
+}
+
 // quoteEnrichRequest bundles everything one lookup needs. The query is built by
 // quoteQueryFor so the parameter mapping (group vs single chat, fromId
 // fallbacks) lives in one place.
@@ -383,6 +394,11 @@ func attachQuoteOrigin(msg channel.InboundMessage, origin *quoteOrigin, appID st
 	if origin == nil {
 		return msg, false
 	}
+	// Copy boundary (DEC11): msg.Raw is read-only. json.Unmarshal builds a
+	// payload graph owned by this call, the origin is cloned so the cache
+	// instance stays private, and normalize* returns a Raw marshaled into a
+	// fresh buffer. No shared map/slice/pointer is written here, therefore one
+	// frame's origin cannot leak into another frame's Raw.
 	var payload infoflowRaw
 	if err := json.Unmarshal(msg.Raw, &payload); err != nil {
 		return msg, false
@@ -390,7 +406,7 @@ func attachQuoteOrigin(msg channel.InboundMessage, origin *quoteOrigin, appID st
 	if payload.AppID == nil || anyString(payload.AppID) == "" {
 		payload.AppID = appID
 	}
-	payload.MulticaQuoteOrigin = origin
+	payload.MulticaQuoteOrigin = origin.clone()
 	if isGroupPayload(payload) {
 		enriched, _, ok := normalizeGroupPayloadReasonWithIdentity(payload, self)
 		return enriched, ok

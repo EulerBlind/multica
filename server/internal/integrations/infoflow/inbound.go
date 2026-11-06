@@ -534,25 +534,61 @@ func flattenQuoted(message *infoflowEventMessage, origin *quoteOrigin) string {
 }
 
 // quoteLineDuplicated reports whether a body TEXT line repeats the resolved full
-// text, the preview or the content. Prefix relations count (DEC9): a preview is
-// commonly the original's first N characters plus an ellipsis.
+// text, the preview or the content. DEC10: only two shapes count as a repeat —
+// (1) equal after whitespace normalization, or (2) the line is a truncated
+// preview ending in an ellipsis whose remaining text prefixes a candidate. Bare
+// prefix relations are NOT enough: an independent short line such as "同意上线"
+// is legitimate next to a full text starting with it.
 func quoteLineDuplicated(line string, quote *infoflowQuote, fullText string) bool {
 	if line == "" {
 		return true
 	}
-	candidates := []string{strings.TrimSpace(fullText)}
+	normalized := normalizeQuoteLine(line)
+	candidates := []string{fullText}
 	if quote != nil {
-		candidates = append(candidates, strings.TrimSpace(quote.Preview), strings.TrimSpace(quote.Content))
+		candidates = append(candidates, quote.Preview, quote.Content)
 	}
+	base, truncated := quoteTruncatedPrefix(normalized)
 	for _, candidate := range candidates {
+		candidate = normalizeQuoteLine(candidate)
 		if candidate == "" {
 			continue
 		}
-		if line == candidate || strings.HasPrefix(line, candidate) || strings.HasPrefix(candidate, line) {
+		if normalized == candidate {
+			return true
+		}
+	}
+	// A truncated preview is only a repeat of the resolved full text, never of
+	// another preview/content blob.
+	if truncated && base != "" {
+		if full := normalizeQuoteLine(fullText); full != "" && strings.HasPrefix(full, base) {
 			return true
 		}
 	}
 	return false
+}
+
+// normalizeQuoteLine removes whitespace so an equality check ignores layout
+// differences. Punctuation, case and wording stay significant, which keeps
+// genuinely different lines out of the dedupe path.
+func normalizeQuoteLine(line string) string {
+	line = strings.ReplaceAll(line, "\u00a0", " ")
+	return strings.Join(strings.Fields(line), "")
+}
+
+// quoteTruncatedPrefix strips a trailing "…" or "..." (optional trailing
+// spaces) and reports whether the line looks like a truncated preview.
+func quoteTruncatedPrefix(line string) (string, bool) {
+	trimmed := strings.TrimRight(line, " \t")
+	switch {
+	case strings.HasSuffix(trimmed, "…"):
+		base := strings.TrimSpace(strings.TrimSuffix(trimmed, "…"))
+		return base, base != ""
+	case strings.HasSuffix(trimmed, "..."):
+		base := strings.TrimSpace(strings.TrimSuffix(trimmed, "..."))
+		return base, base != ""
+	}
+	return "", false
 }
 
 // originAppliesTo keeps a stale origin from labelling a quote it did not come
