@@ -158,7 +158,7 @@ func TestInboundPrivateQuoteIsSelectedContext(t *testing.T) {
 	if !ok {
 		t.Fatal("expected a lookup query")
 	}
-	if query.ReceiverType != 7 || query.ReceiverID != "14534" || query.MsgID != "m0" || query.FromID != "u-quoted" {
+	if query.ReceiverType != 7 || query.ReceiverID != "14534" || query.MsgID != "m0" || query.FromID != "u1" {
 		t.Fatalf("query = %+v", query)
 	}
 }
@@ -182,9 +182,9 @@ func TestInboundPrivateWithoutQuoteIsUnchanged(t *testing.T) {
 	}
 }
 
-// TestQuoteQueryGroupFromIDFallsBackToQuoteHeader: the quoted author travels in
-// reply.header; the current sender is only the last resort (N79 §5.4).
-func TestQuoteQueryGroupFromIDFallsBackToQuoteHeader(t *testing.T) {
+// TestQuoteQueryGroupUsesCurrentSender: DEC17 takes fromId from the current
+// sender; the quoted author in reply.header must not override it.
+func TestQuoteQueryGroupUsesCurrentSender(t *testing.T) {
 	raw := `{"groupid":"12572761","message":{"header":{"fromuserid":"sender","toid":"12572761","totype":"GROUP","messageid":"m9"},"reply":{"messageid":"m8","header":{"fromuserid":"quoted-author"},"preview":"x"},"body":[{"type":"TEXT","content":"hi"}]}}`
 	msg, ok := inboundFromPayload(json.RawMessage(raw), "14534", "bot")
 	if !ok {
@@ -198,7 +198,7 @@ func TestQuoteQueryGroupFromIDFallsBackToQuoteHeader(t *testing.T) {
 	if !ok {
 		t.Fatal("expected query")
 	}
-	if query.FromID != "quoted-author" || query.ReceiverType != 2 || query.ReceiverID != "12572761" || query.MsgID != "m8" {
+	if query.FromID != "sender" || query.ReceiverType != 2 || query.ReceiverID != "12572761" || query.MsgID != "m8" {
 		t.Fatalf("query = %+v", query)
 	}
 }
@@ -308,7 +308,7 @@ func TestInboundGroupBodyQuoteToleratesNestedFieldNames(t *testing.T) {
 	if strings.Count(msg.Text, "嵌套预览") != 1 || !strings.Contains(msg.Text, "正文") {
 		t.Fatalf("Text = %q", msg.Text)
 	}
-	if quote := quoteForPayload(infoflowRaw{Message: &infoflowEventMessage{Body: []map[string]any{{"type": "QUOTE", "messageid": "M8", "fromuserid": "U-QUOTED"}}}}); quote == nil || quoteFromID(quote) != "U-QUOTED" {
+	if quote := quoteForPayload(infoflowRaw{Message: &infoflowEventMessage{Body: []map[string]any{{"type": "QUOTE", "messageid": "M8", "fromuserid": "U-QUOTED"}}}}); quote == nil || quote.FromUserID != "U-QUOTED" {
 		t.Fatalf("quote sender not extracted: %+v", quote)
 	}
 }
@@ -425,5 +425,138 @@ func TestInboundGroupBodyQuoteIDOnlySelectsContext(t *testing.T) {
 	}
 	if strings.Contains(msg.Text, "<quoted_message>") {
 		t.Fatalf("no preview yet, envelope should appear only after lookup: %s", msg.Text)
+	}
+}
+
+// replyDataRaw builds the live N93 shape: the selected quote is a REPLYDATA
+// body element whose content is an object and whose identity is sBasemsgId.
+func replyDataRaw(fields string, own string) json.RawMessage {
+	return json.RawMessage(`{"groupid":"12572761","message":{"header":{"fromuserid":"wangjianghua","toid":"12572761","totype":"GROUP","msgtype":"MIXED","messageid":"m9"},"body":[{"type":"AT","atuserids":["4100104388"]},{"type":"REPLYDATA",` + fields + `},{"type":"TEXT","content":"` + own + `"}]}}`)
+}
+
+// TestInboundGroupReplyDataQuoteIsSelectedContext is the live REPLYDATA shape:
+// object content, sBasemsgId identity, replyImages and the current sender.
+func TestInboundGroupReplyDataQuoteIsSelectedContext(t *testing.T) {
+	raw := replyDataRaw(`"content":{"type":"text","text":"逐张建成独.."},"imid":"4100111317","replyImages":["https://example.com/q.png"],"sBasemsgId":"1881116886473755392","sMsgId2":"1881116886473755000"`, "能看到这里的内容么？")
+	msg, ok := inboundFromPayload(raw, "8682", "4100104388")
+	if !ok {
+		t.Fatal("expected ok")
+	}
+	if !msg.HasSelectedContext || msg.ReplyTo == nil || msg.ReplyTo.MessageID != "1881116886473755392" {
+		t.Fatalf("REPLYDATA quote not selected: %+v", msg)
+	}
+	for _, want := range []string{"<quoted_message>", "逐张建成独..", "[IMAGE] https://example.com/q.png", "能看到这里的内容么？"} {
+		if !strings.Contains(msg.Text, want) {
+			t.Fatalf("Text missing %q: %s", want, msg.Text)
+		}
+	}
+	if strings.Count(msg.Text, "逐张建成独..") != 1 {
+		t.Fatalf("preview duplicated into own text: %s", msg.Text)
+	}
+	if msg.CommandText != "能看到这里的内容么？" {
+		t.Fatalf("CommandText = %q", msg.CommandText)
+	}
+
+	var payload infoflowRaw
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatal(err)
+	}
+	query, ok := quoteQueryFor(msg, payload, quoteForPayload(payload))
+	if !ok {
+		t.Fatal("expected a lookup query")
+	}
+	if query.FromID != "wangjianghua" || query.MsgID != "1881116886473755392" || query.ReceiverType != 2 || query.ReceiverID != "12572761" {
+		t.Fatalf("query = %+v", query)
+	}
+	if quote := quoteForPayload(payload); quote == nil || quote.FromUserID != "4100111317" {
+		t.Fatalf("imid must be kept for display only: %+v", quote)
+	}
+}
+
+// TestInboundReplyDataFallsBackToSMsgID2 covers the DEC18 fallback order.
+func TestInboundReplyDataFallsBackToSMsgID2(t *testing.T) {
+	raw := replyDataRaw(`"content":{"type":"text","text":"备选 id 预览"},"sMsgId2":"1881116886473755000"`, "问题")
+	msg, ok := inboundFromPayload(raw, "8682", "4100104388")
+	if !ok {
+		t.Fatal("expected ok")
+	}
+	if msg.ReplyTo == nil || msg.ReplyTo.MessageID != "1881116886473755000" {
+		t.Fatalf("sMsgId2 fallback failed: %+v", msg.ReplyTo)
+	}
+}
+
+// TestInboundReplyDataWithoutMsgIDKeepsPreview: no sBasemsgId/sMsgId2 means no
+// identity, so the quote stays preview-only and the query is skipped.
+func TestInboundReplyDataWithoutMsgIDKeepsPreview(t *testing.T) {
+	raw := replyDataRaw(`"content":{"type":"text","text":"只有预览的引用"},"imid":"4100111317","replyImages":["https://example.com/q.png"]`, "主消息")
+	msg, ok := inboundFromPayload(raw, "8682", "4100104388")
+	if !ok {
+		t.Fatal("expected ok")
+	}
+	if !msg.HasSelectedContext || msg.ReplyTo != nil {
+		t.Fatalf("identity-free quote should be preview only: %+v", msg)
+	}
+	var payload infoflowRaw
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if query, ok := quoteQueryFor(msg, payload, quoteForPayload(payload)); ok {
+		t.Fatalf("no msgId must not query: %+v", query)
+	}
+}
+
+// TestQuoteImageURLsShapes covers the live array plus defensive string/object
+// forms introduced by DEC18.
+func TestQuoteImageURLsShapes(t *testing.T) {
+	cases := []struct {
+		in   any
+		want []string
+	}{
+		{in: nil, want: nil},
+		{in: " u1 ", want: []string{"u1"}},
+		{in: []string{"u2"}, want: []string{"u2"}},
+		{in: []any{"u3", map[string]any{"downloadurl": "u4"}, []any{"u5"}}, want: []string{"u3", "u4", "u5"}},
+		{in: map[string]any{"pic_url": "u6"}, want: []string{"u6"}},
+		{in: 42, want: nil},
+	}
+	for _, tc := range cases {
+		got := quoteImageURLs(tc.in)
+		if len(got) != len(tc.want) {
+			t.Fatalf("quoteImageURLs(%v) = %v, want %v", tc.in, got, tc.want)
+		}
+		for i := range got {
+			if got[i] != tc.want[i] {
+				t.Fatalf("quoteImageURLs(%v) = %v, want %v", tc.in, got, tc.want)
+			}
+		}
+	}
+}
+
+// TestQuoteBodyHasURL covers the dedupe used when replyImages mirrors a nested
+// body image.
+func TestQuoteBodyHasURL(t *testing.T) {
+	body := []map[string]any{
+		nil,
+		{"type": "IMAGE", "downloadurl": "https://example.com/a.png"},
+		{"type": "IMAGE", "pic_url": "https://example.com/b.png"},
+	}
+	if !quoteBodyHasURL(body, "https://example.com/a.png") || !quoteBodyHasURL(body, "https://example.com/b.png") {
+		t.Fatal("existing body URLs must be detected")
+	}
+	if quoteBodyHasURL(body, "https://example.com/c.png") {
+		t.Fatal("missing URL must not be treated as present")
+	}
+}
+
+// TestInboundGroupReplyDataQuoteToBotAddresses: imid is the quoted author; a
+// REPLYDATA quote of the bot must address it without a separate AT.
+func TestInboundGroupReplyDataQuoteToBotAddresses(t *testing.T) {
+	raw := json.RawMessage(`{"groupid":"12572761","message":{"header":{"fromuserid":"wangjianghua","toid":"12572761","totype":"GROUP","messageid":"m9"},"body":[{"type":"REPLYDATA","content":{"type":"text","text":"机器人上一条"},"imid":"4100104388","sBasemsgId":"Q-1"},{"type":"TEXT","content":"继续"}]}}`)
+	msg, ok := inboundFromPayload(raw, "8682", "4100104388")
+	if !ok {
+		t.Fatal("expected ok")
+	}
+	if !msg.AddressedToBot || msg.ReplyTo == nil || msg.ReplyTo.MessageID != "Q-1" {
+		t.Fatalf("REPLYDATA quote of the bot must address it: %+v", msg)
 	}
 }

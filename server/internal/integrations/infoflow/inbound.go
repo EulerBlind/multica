@@ -45,10 +45,10 @@ type infoflowHeader struct {
 }
 
 // infoflowQuote is a quoted/replied message carried beside the sender's own
-// body. The live gateway puts text in preview and images in a nested body;
-// both shapes are read so a quoted image URL is not dropped. Header and
-// FromUserID are the quoted message's author, used to read the full text back
-// from the platform (N79 §5.4); they are additive fields.
+// body. The live gateway puts text in preview, images in a nested body or
+// replyImages, and identity in sBasemsgId/sMsgId2. FromUserID (or the live
+// REPLYDATA.imid) names the quoted author for display/addressing only: DEC17
+// reads the full text with fromId = the CURRENT sender.
 type infoflowQuote struct {
 	MessageID  any              `json:"messageid"`
 	Preview    string           `json:"preview"`
@@ -219,7 +219,7 @@ func normalizeGroupPayloadReasonWithIdentity(payload infoflowRaw, self identityS
 	// recovered (A28: lookup whenever a messageid is available).
 	hasSelectedContext := quoted != ""
 	if !hasSelectedContext {
-		if q := quoteFromBody(message.Body); q != nil && anyString(q.MessageID) != "" && quoteFromID(q) != "" {
+		if q := quoteFromBody(message.Body); q != nil && anyString(q.MessageID) != "" {
 			hasSelectedContext = true
 		}
 	}
@@ -326,17 +326,22 @@ func flattenBodyText(body []map[string]any, includeQuote bool) string {
 			if s := firstURL(item["label"], item["url"]); s != "" {
 				parts = append(parts, "链接: "+s)
 			}
-		case "QUOTE", "REPLY", "REFERENCE":
+		case "QUOTE", "REPLY", "REFERENCE", "REPLYDATA":
 			if !includeQuote {
 				continue
 			}
 			if nested := flattenBodyText(bodyItems(item["body"]), true); nested != "" {
 				parts = append(parts, nested)
-			} else if s := stringOrEmpty(item["content"]); s != "" {
+			} else if s := quoteTextValue(item["content"]); s != "" {
 				parts = append(parts, s)
 			}
 			if url := firstURL(item["downloadurl"], item["url"], item["content"]); strings.HasPrefix(url, "http") && !strings.Contains(strings.Join(parts, "\n"), url) {
 				parts = append(parts, "[IMAGE] "+url)
+			}
+			for _, url := range quoteImageURLs(fieldValue(item, "replyimages", "reply_images")) {
+				if !strings.Contains(strings.Join(parts, "\n"), url) {
+					parts = append(parts, "[IMAGE] "+url)
+				}
 			}
 		default:
 			if s := stringOrEmpty(item["content"]); s != "" {
@@ -374,10 +379,13 @@ func addressedToBot(payload infoflowRaw, self identitySet, eventType string) boo
 	if payload.Message.Reply != nil || payload.Message.Quote != nil {
 		return true
 	}
-	if q := quoteFromBody(payload.Message.Body); q != nil && self.matches(quoteFromID(q)) {
-		// N88: replying through the quote UI arrives as a body element; quoting
-		// the bot itself still counts as addressing it.
-		return true
+	if q := quoteFromBody(payload.Message.Body); q != nil {
+		// Replying through the quote UI arrives as a body element; quoting the
+		// bot itself still counts as addressing it. This author field is for
+		// display/addressing only — DEC17 never uses it as getSingleMsg fromId.
+		if author := strings.TrimSpace(q.FromUserID); self.matches(author) {
+			return true
+		}
 	}
 	for _, item := range payload.Message.Body {
 		if !strings.EqualFold(stringOrEmpty(item["type"]), "AT") {
@@ -711,7 +719,7 @@ func groupReplyTo(message *infoflowEventMessage) *channel.ReplyCtx {
 	}
 	if q == nil {
 		// N88: the live gateway also delivers a selected quote as a body
-		// element (type QUOTE/REPLY/REFERENCE), not as message.reply/quote.
+		// element (QUOTE/REPLY/REFERENCE/REPLYDATA), not as message.reply/quote.
 		q = quoteFromBody(message.Body)
 	}
 	if q == nil {
@@ -724,7 +732,7 @@ func groupReplyTo(message *infoflowEventMessage) *channel.ReplyCtx {
 	return &channel.ReplyCtx{MessageID: messageID}
 }
 
-// withBodyQuote promotes a QUOTE/REPLY/REFERENCE body element to a quote
+// withBodyQuote promotes a QUOTE/REPLY/REFERENCE/REPLYDATA body element to a quote
 // envelope. An explicit message.reply/quote wins: the gateway never mirrors the
 // same quote in both places in the observed traffic, and rendering both would
 // duplicate it.
@@ -749,7 +757,7 @@ func quoteElementFromBody(body []map[string]any) map[string]any {
 			continue
 		}
 		switch strings.ToUpper(stringOrEmpty(item["type"])) {
-		case "QUOTE", "REPLY", "REFERENCE":
+		case "QUOTE", "REPLY", "REFERENCE", "REPLYDATA":
 			return item
 		}
 	}
@@ -781,11 +789,30 @@ func quoteFromBody(body []map[string]any) *infoflowQuote {
 		}
 		return ""
 	}
+	getText := func(keys ...string) string {
+		for _, candidate := range candidates {
+			for _, key := range keys {
+				if v := fieldValue(candidate, key); v != nil {
+					if s := quoteTextValue(v); s != "" {
+						return s
+					}
+				}
+			}
+		}
+		return ""
+	}
 	q := &infoflowQuote{}
-	q.MessageID = get("messageid", "msgid", "message_id", "msg_id", "quoteid", "quote_id", "id")
-	q.FromUserID = get("fromuserid", "fromid", "from_userid", "from_user_id", "senderid", "sender_id", "userid", "user_id")
+	// DEC18: the live REPLYDATA element pins the quoted message with
+	// sBasemsgId and falls back to sMsgId2. Older/unknown shapes keep the
+	// tolerant aliases so the pre-N93 QUOTE/REPLY/REFERENCE forms still work.
+	q.MessageID = get("sbasemsgid", "basemsgid", "smsgid2", "msgid2",
+		"messageid", "msgid", "message_id", "msg_id", "quoteid", "quote_id", "id")
+	// imid is the quoted author. It is display/verification only: DEC17 takes
+	// fromId from the current sender, never from this field.
+	q.FromUserID = get("fromuserid", "fromid", "from_userid", "from_user_id",
+		"senderid", "sender_id", "userid", "user_id", "imid", "im_id")
 	q.Header.FromUserID = q.FromUserID
-	q.Preview = get("content", "preview", "text", "title", "summary", "desc", "description")
+	q.Preview = getText("content", "preview", "text", "title", "summary", "desc", "description")
 	for _, candidate := range candidates {
 		if body := bodyItems(fieldValue(candidate, "body", "bodys", "elements")); len(body) > 0 {
 			q.Body = body
@@ -802,10 +829,82 @@ func quoteFromBody(body []map[string]any) *infoflowQuote {
 	if url != "" {
 		q.Body = append(q.Body, map[string]any{"type": "IMAGE", "downloadurl": url})
 	}
+	for _, candidate := range candidates {
+		for _, url := range quoteImageURLs(fieldValue(candidate, "replyimages", "reply_images")) {
+			if !quoteBodyHasURL(q.Body, url) {
+				q.Body = append(q.Body, map[string]any{"type": "IMAGE", "downloadurl": url})
+			}
+		}
+	}
 	if q.MessageID == "" && q.Preview == "" && len(q.Body) == 0 {
 		return nil
 	}
 	return q
+}
+
+// quoteTextValue reads a quoted preview. The live REPLYDATA shape wraps it as
+// {"type":"text","text":"..."}; older shapes use a plain string (DEC19).
+func quoteTextValue(v any) string {
+	switch typed := v.(type) {
+	case string:
+		return strings.TrimSpace(typed)
+	case map[string]any:
+		for _, key := range []string{"text", "content", "preview"} {
+			if s := scalarString(fieldValue(typed, key)); s != "" {
+				return s
+			}
+		}
+	}
+	return ""
+}
+
+// quoteImageURLs extracts replyImages values. The field is an array of strings
+// or image objects on the live payload; a single string is accepted too so a
+// future shape does not drop the image.
+func quoteImageURLs(v any) []string {
+	switch typed := v.(type) {
+	case nil:
+		return nil
+	case string:
+		if s := strings.TrimSpace(typed); s != "" {
+			return []string{s}
+		}
+	case []string:
+		urls := make([]string, 0, len(typed))
+		for _, s := range typed {
+			if s = strings.TrimSpace(s); s != "" {
+				urls = append(urls, s)
+			}
+		}
+		return urls
+	case []any:
+		urls := make([]string, 0, len(typed))
+		for _, item := range typed {
+			urls = append(urls, quoteImageURLs(item)...)
+		}
+		return urls
+	case map[string]any:
+		for _, key := range []string{"downloadurl", "download_url", "url", "picurl", "pic_url", "src"} {
+			if s := scalarString(fieldValue(typed, key)); s != "" {
+				return []string{s}
+			}
+		}
+	}
+	return nil
+}
+
+// quoteBodyHasURL reports whether a media row already carries the URL so a
+// replyImages entry mirrored in the nested body is rendered once.
+func quoteBodyHasURL(body []map[string]any, url string) bool {
+	for _, item := range body {
+		if item == nil {
+			continue
+		}
+		if firstURL(item["downloadurl"], item["url"], item["picurl"], item["pic_url"]) == url {
+			return true
+		}
+	}
+	return false
 }
 
 // nestedMap returns a nested object field by case-insensitive key.

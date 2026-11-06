@@ -77,8 +77,68 @@ type quoteMessageDetail struct {
 	ReceiverID   any    `json:"receiverId"`
 	ReceiverType int    `json:"receiverType"`
 	MsgType      string `json:"msgType"`
-	Content      string `json:"content"`
-	CreateTime   int64  `json:"createTime"`
+	// Content is flattened from either the legacy string shape or the live
+	// {"type":"text","text":"..."} object. UnmarshalJSON below does the work.
+	Content    string `json:"-"`
+	CreateTime int64  `json:"-"`
+}
+
+// UnmarshalJSON accepts both getSingleMsg content shapes and both time field
+// names. The live successful item is:
+//
+//	{"msgId":"...","msgType":"app_msg","sendTime":1791987034577,
+//	 "content":{"type":"text","text":"..."}}
+//
+// while older fixtures and the legacy flat envelope used content:"..." and
+// createTime. items:null still yields no detail (see quoteMessageResponse).
+func (d *quoteMessageDetail) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		MsgID        any             `json:"msgId"`
+		FromID       string          `json:"fromId"`
+		ReceiverID   any             `json:"receiverId"`
+		ReceiverType int             `json:"receiverType"`
+		MsgType      string          `json:"msgType"`
+		Content      json.RawMessage `json:"content"`
+		SendTime     int64           `json:"sendTime"`
+		CreateTime   int64           `json:"createTime"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	d.MsgID = raw.MsgID
+	d.FromID = raw.FromID
+	d.ReceiverID = raw.ReceiverID
+	d.ReceiverType = raw.ReceiverType
+	d.MsgType = raw.MsgType
+	d.Content = quoteContentText(raw.Content)
+	if raw.SendTime != 0 {
+		d.CreateTime = raw.SendTime
+	} else {
+		d.CreateTime = raw.CreateTime
+	}
+	return nil
+}
+
+// quoteContentText flattens content that is either a string or an object with
+// a text field. Anything else is empty, which callers treat as not found.
+func quoteContentText(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		return text
+	}
+	var object map[string]any
+	if err := json.Unmarshal(raw, &object); err != nil {
+		return ""
+	}
+	for _, key := range []string{"text", "content", "preview"} {
+		if s, ok := object[key].(string); ok {
+			return s
+		}
+	}
+	return ""
 }
 
 // quoteOrigin is stored under the multica_quote_origin key of the raw payload
@@ -106,8 +166,8 @@ func (o *quoteOrigin) clone() *quoteOrigin {
 }
 
 // quoteEnrichRequest bundles everything one lookup needs. The query is built by
-// quoteQueryFor so the parameter mapping (group vs single chat, fromId
-// fallbacks) lives in one place.
+// quoteQueryFor so the parameter mapping (group vs single chat, current-sender
+// fromId) lives in one place.
 type quoteEnrichRequest struct {
 	AppID     string
 	AppKey    string
@@ -352,12 +412,21 @@ func truncateQuoteText(text string) string {
 
 // quoteQueryFor builds the lookup query from one inbound message. msgId prefers
 // reply over quote, and the receiver is the group id or the bot's agent id.
-// fromId only comes from the quote itself (DEC6): see quoteFromID.
+// DEC17: fromId is the CURRENT human sender, not the quoted author. The live
+// API reads a message only when fromId is a member of the group; the message
+// identity is pinned by the quote's own msgId, so a wrong-identity read is
+// prevented by requiring both fields.
 func quoteQueryFor(msg channel.InboundMessage, payload infoflowRaw, quote *infoflowQuote) (quoteQuery, bool) {
 	if quote == nil {
 		return quoteQuery{}, false
 	}
-	query := quoteQuery{MsgID: anyString(quote.MessageID)}
+	query := quoteQuery{
+		MsgID:  strings.TrimSpace(anyString(quote.MessageID)),
+		FromID: strings.TrimSpace(msg.Source.SenderID),
+	}
+	if query.MsgID == "" || query.FromID == "" {
+		return quoteQuery{}, false
+	}
 	switch msg.Source.ChatType {
 	case channel.ChatTypeGroup:
 		query.ReceiverType = 2
@@ -369,25 +438,7 @@ func quoteQueryFor(msg channel.InboundMessage, payload infoflowRaw, quote *infof
 	if query.ReceiverID == "" {
 		return quoteQuery{}, false
 	}
-	query.FromID = quoteFromID(quote)
-	if query.FromID == "" {
-		return quoteQuery{}, false
-	}
 	return query, true
-}
-
-// quoteFromID resolves the quoted message's author from the quote itself only.
-// DEC6 (N81 Q4): falling back to the current sender can read a DIFFERENT message
-// and silently splice it into the conversation, which is worse than no lookup.
-// A quote without its own sender therefore stays a preview with zero requests.
-func quoteFromID(quote *infoflowQuote) string {
-	if quote == nil {
-		return ""
-	}
-	if id := strings.TrimSpace(quote.Header.FromUserID); id != "" {
-		return id
-	}
-	return strings.TrimSpace(quote.FromUserID)
 }
 
 // quoteForPayload returns the quote the enricher should resolve.

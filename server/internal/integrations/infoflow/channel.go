@@ -218,6 +218,12 @@ func (c *infoflowChannel) logInboundShape(ctx context.Context, raw json.RawMessa
 		quoteFields = shapeFields(element, "")
 		sort.Strings(quoteFields)
 	}
+	fromIDSource := ""
+	if payload.Message != nil && strings.TrimSpace(payload.Message.Header.FromUserID) != "" {
+		fromIDSource = "current_sender"
+	} else if strings.TrimSpace(payload.FromUserID) != "" {
+		fromIDSource = "current_sender"
+	}
 
 	c.logger.InfoContext(ctx, "infoflow: inbound frame shape",
 		"chat_type", chatType,
@@ -227,6 +233,7 @@ func (c *infoflowChannel) logInboundShape(ctx context.Context, raw json.RawMessa
 		"body_types", bodyTypes,
 		"body_keys", keysByType,
 		"quote_element_fields", quoteFields,
+		"quote_from_id_source", fromIDSource,
 	)
 }
 

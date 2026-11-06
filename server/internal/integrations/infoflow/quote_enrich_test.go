@@ -118,7 +118,7 @@ func TestQuoteEnricherSkipsWithoutMessageID(t *testing.T) {
 		t.Fatalf("state = %q, want skipped", origin.State)
 	}
 	if token, message := gw.calls(); token != 0 || message != 0 {
-		t.Fatalf("no HTTP expected, token=%d message=%d", token, message)
+		t.Fatalf("no HTTP for a quote without msgId, token=%d message=%d", token, message)
 	}
 }
 
@@ -427,34 +427,37 @@ func TestChannelHandleFrameSingleChatFallsBackToInstallAppID(t *testing.T) {
 	}
 }
 
-// TestQuoteQueryRequiresQuoteSender is the DEC6 guard (N81 Q4): a quote without
-// its own sender must not borrow the current sender, because that can read a
-// different message.
-func TestQuoteQueryRequiresQuoteSender(t *testing.T) {
-	msg := channel.InboundMessage{Source: channel.Source{ChannelType: TypeInfoFlow, ChatType: channel.ChatTypeGroup, ChatID: "G-1"}}
+// TestQuoteQueryRequiresCurrentSender locks DEC17: fromId is the current
+// sender; a quote without identity or without a current sender makes no query.
+func TestQuoteQueryRequiresCurrentSender(t *testing.T) {
 	payload := infoflowRaw{FromUserID: "U-X", Message: &infoflowEventMessage{
 		Header: infoflowHeader{FromUserID: "U-X"},
-		Reply:  &infoflowQuote{MessageID: "Q-10", Preview: "只有预览"},
+		Reply:  &infoflowQuote{MessageID: "Q-10", Preview: "只有预览", Header: infoflowHeader{FromUserID: "U-QUOTED"}},
 	}}
+	msg := channel.InboundMessage{Source: channel.Source{ChannelType: TypeInfoFlow, ChatType: channel.ChatTypeGroup, ChatID: "G-1"}}
 	if query, ok := quoteQueryFor(msg, payload, payload.Message.Reply); ok {
-		t.Fatalf("quote without its own sender must not be looked up: %+v", query)
+		t.Fatalf("quote without a current sender must not be looked up: %+v", query)
 	}
-
-	payload.Message.Reply.Header.FromUserID = "U-QUOTED"
+	msg.Source.SenderID = "U-CURRENT"
 	query, ok := quoteQueryFor(msg, payload, payload.Message.Reply)
-	if !ok || query.FromID != "U-QUOTED" || query.MsgID != "Q-10" {
-		t.Fatalf("quote sender must be used verbatim: %+v ok=%v", query, ok)
+	if !ok || query.FromID != "U-CURRENT" || query.MsgID != "Q-10" {
+		t.Fatalf("current sender must be fromId: %+v ok=%v", query, ok)
+	}
+	payload.Message.Reply.MessageID = ""
+	if query, ok := quoteQueryFor(msg, payload, payload.Message.Reply); ok {
+		t.Fatalf("quote without msgId must not be looked up: %+v", query)
 	}
 }
 
-// TestChannelHandleFrameQuoteWithoutSenderMakesNoRequest: the Q4 counter-example
-// end to end — zero getSingleMsg calls, labelled preview, main message delivered.
-func TestChannelHandleFrameQuoteWithoutSenderMakesNoRequest(t *testing.T) {
+// TestChannelHandleFrameQuoteWithoutMsgIDMakesNoRequest: DEC17 keeps the
+// zero-request guard for a quote that carries no identity. The current sender
+// alone is not enough.
+func TestChannelHandleFrameQuoteWithoutMsgIDMakesNoRequest(t *testing.T) {
 	gw := &quoteGateway{message: func(_ int, w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"code":"ok","data":{"content":"不应被请求"}}`))
 	}}
 	srv := gw.start(t)
-	raw := json.RawMessage(`{"groupid":"G-Q4","message":{"header":{"fromuserid":"U-X","toid":"G-Q4","totype":"GROUP","msgtype":"TEXT","messageid":"M-Q4"},"reply":{"messageid":"Q-10","preview":"只有预览的引用"},"body":[{"type":"AT","atuserids":["4100104388"]},{"type":"TEXT","content":"主消息"}]}}`)
+	raw := json.RawMessage(`{"groupid":"G-Q4","message":{"header":{"fromuserid":"U-X","toid":"G-Q4","totype":"GROUP","msgtype":"TEXT","messageid":"M-Q4"},"reply":{"messageid":"","preview":"只有预览的引用"},"body":[{"type":"AT","atuserids":["4100104388"]},{"type":"TEXT","content":"主消息"}]}}`)
 
 	var got channel.InboundMessage
 	ch := &infoflowChannel{
@@ -474,7 +477,7 @@ func TestChannelHandleFrameQuoteWithoutSenderMakesNoRequest(t *testing.T) {
 		t.Fatalf("handleFrame: %v", err)
 	}
 	if token, message := gw.calls(); token != 0 || message != 0 {
-		t.Fatalf("quote without sender must make zero requests, token=%d message=%d", token, message)
+		t.Fatalf("quote without msgId must make zero requests, token=%d message=%d", token, message)
 	}
 	for _, want := range []string{quoteTagPreview, "只有预览的引用", "主消息"} {
 		if !strings.Contains(got.Text, want) {
@@ -492,8 +495,8 @@ func bodyQuoteRaw(quoteFields string, own string) json.RawMessage {
 }
 
 // TestChannelHandleFrameEnrichesBodyQuote is A28 end to end: a body QUOTE element
-// with messageid/fromuserid triggers getSingleMsg and is replaced by the full
-// text while the main message survives.
+// with a messageid triggers getSingleMsg using the current sender as fromId and
+// is replaced by the full text while the main message survives.
 func TestChannelHandleFrameEnrichesBodyQuote(t *testing.T) {
 	full := strings.Repeat("完整引用正文", 300)
 	gw := &quoteGateway{message: func(_ int, w http.ResponseWriter, _ *http.Request) {
@@ -534,7 +537,7 @@ func TestChannelHandleFrameEnrichesBodyQuote(t *testing.T) {
 		t.Fatalf("Raw must carry ok origin: %s", got.Raw)
 	}
 	query := gw.lastQuery
-	for key, want := range map[string]string{"fromId": "u-quoted", "receiverId": "12572761", "receiverType": "2", "msgId": "m8"} {
+	for key, want := range map[string]string{"fromId": "wangjianghua", "receiverId": "12572761", "receiverType": "2", "msgId": "m8"} {
 		if query.Get(key) != want {
 			t.Fatalf("%s = %q, want %q", key, query.Get(key), want)
 		}
@@ -658,14 +661,14 @@ func TestChannelHandleFrameBodyQuoteBusinessCodes(t *testing.T) {
 	}
 }
 
-// TestChannelHandleFrameBodyQuoteWithoutSenderMakesNoRequest: DEC6 still holds
-// for the body shape — no quoted author means zero HTTP, preview only.
-func TestChannelHandleFrameBodyQuoteWithoutSenderMakesNoRequest(t *testing.T) {
+// TestChannelHandleFrameBodyQuoteWithoutMsgIDMakesNoRequest: a body quote with
+// preview but no identity must stay preview-only with zero HTTP.
+func TestChannelHandleFrameBodyQuoteWithoutMsgIDMakesNoRequest(t *testing.T) {
 	gw := &quoteGateway{message: func(_ int, w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"code":"ok","data":{"code":200,"data":{"items":[{"content":"must not fetch"}]}}}`))
 	}}
 	srv := gw.start(t)
-	raw := bodyQuoteRaw(`"content":"只有预览的引用","messageid":"m8"`, "主消息")
+	raw := bodyQuoteRaw(`"content":"只有预览的引用"`, "主消息")
 
 	var got channel.InboundMessage
 	ch := &infoflowChannel{
@@ -685,7 +688,7 @@ func TestChannelHandleFrameBodyQuoteWithoutSenderMakesNoRequest(t *testing.T) {
 		t.Fatalf("handleFrame: %v", err)
 	}
 	if token, message := gw.calls(); token != 0 || message != 0 {
-		t.Fatalf("no HTTP expected, token=%d message=%d", token, message)
+		t.Fatalf("no HTTP for a quote without msgId, token=%d message=%d", token, message)
 	}
 	for _, want := range []string{quoteTagPreview, "只有预览的引用", "主消息"} {
 		if !strings.Contains(got.Text, want) {
@@ -708,19 +711,20 @@ func TestProcessFrameLogsRedactedShape(t *testing.T) {
 	}
 	frameWithQuote := json.RawMessage(`{"groupid":"G1","message":{"header":{"fromuserid":"SECRET-USER","toid":"G1","messageid":"M9"},"body":[{"type":"AT","atuserids":["SECRET-USER"]},{"type":"TEXT","content":"SECRET-CONTENT"},{"type":"IMAGE","downloadurl":"https://secret.example/x.png"},{"type":"QUOTE","content":"SECRET-PREVIEW","messageid":"M8","fromuserid":"SECRET-QUOTED","header":{"fromuserid":"SECRET-QUOTED"}}]}}`)
 	frameWithReply := json.RawMessage(`{"groupid":"G1","message":{"header":{"fromuserid":"SECRET-USER","toid":"G1","messageid":"M10"},"reply":{"messageid":"M11","preview":"SECRET-REPLY"},"body":[{"type":"TEXT","content":"SECRET-OTHER"}]}}`)
-	for _, raw := range []json.RawMessage{frameWithQuote, frameWithReply} {
+	frameWithReplyData := replyDataRaw(`"content":{"type":"text","text":"SECRET-PREVIEW"},"imid":"SECRET-QUOTED","replyImages":["https://secret.example/q.png"],"sBasemsgId":"SECRET-MSGID"`, "SECRET-OTHER")
+	for _, raw := range []json.RawMessage{frameWithQuote, frameWithReply, frameWithReplyData} {
 		if err := ch.processFrame(context.Background(), raw); err != nil {
 			t.Fatalf("processFrame: %v", err)
 		}
 	}
 	logged := buf.String()
-	for _, secret := range []string{"SECRET-CONTENT", "SECRET-PREVIEW", "secret.example", "SECRET-USER", "SECRET-QUOTED", "SECRET-REPLY", "SECRET-OTHER"} {
+	for _, secret := range []string{"SECRET-CONTENT", "SECRET-PREVIEW", "secret.example", "SECRET-USER", "SECRET-QUOTED", "SECRET-REPLY", "SECRET-OTHER", "SECRET-MSGID"} {
 		if strings.Contains(logged, secret) {
 			t.Fatalf("log leaked %q: %s", secret, logged)
 		}
 	}
 	lines := strings.Split(strings.TrimSpace(logged), "\n")
-	if len(lines) != 2 {
+	if len(lines) != 3 {
 		t.Fatalf("want one shape line per frame, got %d: %s", len(lines), logged)
 	}
 	var first map[string]any
@@ -742,5 +746,96 @@ func TestProcessFrameLogsRedactedShape(t *testing.T) {
 	}
 	if second["reply_present"] != true {
 		t.Fatalf("reply_present must be true: %v", second)
+	}
+	var third map[string]any
+	if err := json.Unmarshal([]byte(lines[2]), &third); err != nil {
+		t.Fatalf("decode log: %v", err)
+	}
+	if third["quote_from_id_source"] != "current_sender" {
+		t.Fatalf("quote_from_id_source = %v", third["quote_from_id_source"])
+	}
+	fields, _ := third["quote_element_fields"].([]any)
+	if !containsAny(fields, "sBasemsgId") || containsAny(fields, "SECRET-MSGID") {
+		t.Fatalf("REPLYDATA field names missing or value leaked: %v", fields)
+	}
+}
+
+func containsAny(values []any, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+// TestChannelHandleFrameEnrichesReplyDataQuote is the N93 end-to-end live shape:
+// REPLYDATA object content, sBasemsgId query and full text back-fill.
+func TestChannelHandleFrameEnrichesReplyDataQuote(t *testing.T) {
+	full := strings.Repeat("完整引用正文", 300)
+	gw := &quoteGateway{message: func(_ int, w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"code":"ok","data":{"code":200,"message":"ok","data":{"items":[{"msgId":"1881116886473755392","msgType":"app_msg","sendTime":1791987034577,"content":{"type":"text","text":"` + full + `"}}]}}}`))
+	}}
+	srv := gw.start(t)
+	raw := replyDataRaw(`"content":{"type":"text","text":"逐张建成独.."},"imid":"4100111317","replyImages":["https://example.com/q.png"],"sBasemsgId":"1881116886473755392","sMsgId2":"1881116886473755000"`, "能看到这里的内容么？")
+
+	var got channel.InboundMessage
+	ch := &infoflowChannel{
+		appID:         "14534",
+		appKey:        "app-key",
+		appSecret:     "app-secret",
+		botUserID:     "4100104388",
+		client:        NewClient(srv.Client(), srv.URL),
+		quoteEnricher: newQuoteEnricher(NewClient(srv.Client(), srv.URL), discardLogger()),
+		logger:        discardLogger(),
+		handler: func(_ context.Context, msg channel.InboundMessage) error {
+			got = msg
+			return nil
+		},
+	}
+	if err := ch.handleFrame(context.Background(), Frame{Method: FrameData, Payload: raw}); err != nil {
+		t.Fatalf("handleFrame: %v", err)
+	}
+	for _, want := range []string{quoteTagFull, full, "[IMAGE] https://example.com/q.png", "能看到这里的内容么？"} {
+		if !strings.Contains(got.Text, want) {
+			t.Fatalf("Text missing %q: %s", want, got.Text)
+		}
+	}
+	if strings.Contains(got.Text, "逐张建成独..") {
+		t.Fatalf("preview must be replaced by full text: %s", got.Text)
+	}
+	if !strings.Contains(string(got.Raw), `"create_time":1791987034577`) {
+		t.Fatalf("sendTime must map to origin create_time: %s", got.Raw)
+	}
+	query := gw.lastQuery
+	for key, want := range map[string]string{"fromId": "wangjianghua", "receiverId": "12572761", "receiverType": "2", "msgId": "1881116886473755392"} {
+		if query.Get(key) != want {
+			t.Fatalf("%s = %q, want %q", key, query.Get(key), want)
+		}
+	}
+}
+
+// TestQuoteMessageDetailContentAndTime covers DEC19: string/object content and
+// sendTime/createTime in the same response model.
+func TestQuoteMessageDetailContentAndTime(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		raw  string
+		want string
+		time int64
+	}{
+		{name: "string createTime", raw: `{"msgId":"m","content":"字符串全文","createTime":111}`, want: "字符串全文", time: 111},
+		{name: "object sendTime", raw: `{"msgId":"m","content":{"type":"text","text":"对象全文"},"sendTime":222}`, want: "对象全文", time: 222},
+		{name: "object createTime", raw: `{"msgId":"m","content":{"type":"markdown","text":"对象旧时间"},"createTime":333}`, want: "对象旧时间", time: 333},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var detail quoteMessageDetail
+			if err := json.Unmarshal([]byte(tc.raw), &detail); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if detail.Content != tc.want || detail.CreateTime != tc.time {
+				t.Fatalf("detail = %+v, want content=%q time=%d", detail, tc.want, tc.time)
+			}
+		})
 	}
 }

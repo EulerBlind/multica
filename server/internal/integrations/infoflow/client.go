@@ -317,8 +317,39 @@ type quoteMessageResponse struct {
 		Data    *struct {
 			Items []quoteMessageDetail `json:"items"`
 		} `json:"data"`
-		quoteMessageDetail
+		quoteLegacyDetail
 	} `json:"data"`
+}
+
+// quoteLegacyDetail is the flat pre-N88 data object. It stays a separate type
+// without UnmarshalJSON: embedding quoteMessageDetail here would promote its
+// custom decoder onto the whole Data object and hide the live data.data.items.
+type quoteLegacyDetail struct {
+	MsgID        any             `json:"msgId"`
+	FromID       string          `json:"fromId"`
+	ReceiverID   any             `json:"receiverId"`
+	ReceiverType int             `json:"receiverType"`
+	MsgType      string          `json:"msgType"`
+	Content      json.RawMessage `json:"content"`
+	SendTime     int64           `json:"sendTime"`
+	CreateTime   int64           `json:"createTime"`
+}
+
+func (d quoteLegacyDetail) detail() quoteMessageDetail {
+	detail := quoteMessageDetail{
+		MsgID:        d.MsgID,
+		FromID:       d.FromID,
+		ReceiverID:   d.ReceiverID,
+		ReceiverType: d.ReceiverType,
+		MsgType:      d.MsgType,
+		Content:      quoteContentText(d.Content),
+	}
+	if d.SendTime != 0 {
+		detail.CreateTime = d.SendTime
+	} else {
+		detail.CreateTime = d.CreateTime
+	}
+	return detail
 }
 
 func (r quoteMessageResponse) detail() (quoteMessageDetail, bool) {
@@ -332,10 +363,11 @@ func (r quoteMessageResponse) detail() (quoteMessageDetail, bool) {
 		}
 		return detail, true
 	}
-	if strings.TrimSpace(r.Data.Content) == "" {
+	detail := r.Data.quoteLegacyDetail.detail()
+	if strings.TrimSpace(detail.Content) == "" {
 		return quoteMessageDetail{}, false
 	}
-	return r.Data.quoteMessageDetail, true
+	return detail, true
 }
 
 // quoteNotFoundError carries a redacted response skeleton for the not-found log.
