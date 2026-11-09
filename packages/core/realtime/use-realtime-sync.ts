@@ -74,6 +74,7 @@ import {
   QUICK_ACTIONS_PENDING_TIMEOUT_MS,
 } from "../chat/queries";
 import { useChatStore } from "../chat";
+import { connectedAppsKeys } from "../connected-apps/queries";
 import { upsertChatMessageToCaches } from "../chat/message-cache";
 import {
   promotePendingChatTask,
@@ -839,6 +840,16 @@ export function useRealtimeSync(
       // events without dedicated handlers.
       workspace: () => {
         qc.invalidateQueries({ queryKey: workspaceKeys.list() });
+      },
+      // app_request:changed carries ids only; refetch through the
+      // authorized list endpoints.
+      app_request: () => {
+        const wsId = getCurrentWsId();
+        if (wsId) qc.invalidateQueries({ queryKey: connectedAppsKeys.requests(wsId) });
+      },
+      app_call: () => {
+        const wsId = getCurrentWsId();
+        if (wsId) qc.invalidateQueries({ queryKey: connectedAppsKeys.calls(wsId) });
       },
       skill: () => {
         const wsId = getCurrentWsId();
