@@ -771,11 +771,6 @@ func TestInboundDropReasons(t *testing.T) {
 		want string
 	}{
 		{
-			name: "missing sender",
-			raw:  `{"groupid":"12572761","message":{"header":{"totype":"GROUP","msgtype":"TEXT","messageid":"m3"},"body":[{"type":"AT","userid":"bot"},{"type":"TEXT","content":"hi"}]}}`,
-			want: dropReasonMissingSender,
-		},
-		{
 			name: "empty content",
 			raw:  `{"groupid":"12572761","message":{"header":{"fromuserid":"u1","totype":"GROUP","msgtype":"TEXT","messageid":"m4"},"body":[]}}`,
 			want: dropReasonEmptyContent,
@@ -798,8 +793,21 @@ func TestInboundDropReasons(t *testing.T) {
 		})
 	}
 
+	// DEC34: a missing sender must be delivered, not dropped. The engine gets
+	// a message with empty sender fields and logs the degradation; losing the
+	// whole body is never an acceptable quote/sender failure mode.
+	msg, reason, ok := inboundFromPayloadReason(json.RawMessage(
+		`{"groupid":"12572761","message":{"header":{"totype":"GROUP","msgtype":"TEXT","messageid":"m3"},"body":[{"type":"AT","userid":"bot"},{"type":"TEXT","content":"hi"}]}}`),
+		"14534", "4105001274")
+	if !ok || reason != "" {
+		t.Fatalf("missing sender must normalize for delivery: ok=%v reason=%q msg=%+v", ok, reason, msg)
+	}
+	if msg.Source.SenderID != "" || msg.Source.ChatID != "12572761" || msg.Text != "hi" {
+		t.Fatalf("missing sender degraded routing = %+v", msg)
+	}
+
 	// An addressed group message routes.
-	_, reason, ok := inboundFromPayloadReason(json.RawMessage(
+	_, reason, ok = inboundFromPayloadReason(json.RawMessage(
 		`{"groupid":"12572761","message":{"header":{"fromuserid":"u1","totype":"GROUP","msgtype":"TEXT","messageid":"m5"},"body":[{"type":"AT","userid":"4105001274"},{"type":"TEXT","content":"hi"}]}}`),
 		"14534", "4105001274")
 	if !ok || reason != "" {

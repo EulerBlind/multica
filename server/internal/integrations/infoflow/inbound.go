@@ -71,6 +71,45 @@ type quoteIDCandidate struct {
 	JSONType string
 }
 
+// UnmarshalJSON is deliberately tolerant of a malformed quote object: a wrong
+// preview/body/header shape must not fail the whole payload and erase the
+// sender's own body (DEC34/A31). Unknown fields are ignored; a non-object quote
+// becomes an empty quote and the normalizer omits it.
+func (q *infoflowQuote) UnmarshalJSON(data []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil
+	}
+	q.MessageID = decodeQuoteAny(raw["messageid"])
+	q.Preview = lenientQuoteString(raw["preview"])
+	q.Content = lenientQuoteString(raw["content"])
+	q.FromUserID = lenientQuoteString(raw["fromuserid"])
+	q.Body = bodyItems(decodeQuoteAny(raw["body"]))
+	if header, ok := raw["header"]; ok {
+		_ = json.Unmarshal(header, &q.Header)
+	}
+	return nil
+}
+
+// decodeQuoteAny preserves json.Number for 19-digit ids. A malformed field is
+// ignored rather than propagated: quote fields are optional context.
+func decodeQuoteAny(raw json.RawMessage) any {
+	if len(raw) == 0 {
+		return nil
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var v any
+	if err := dec.Decode(&v); err != nil {
+		return nil
+	}
+	return v
+}
+
+func lenientQuoteString(raw json.RawMessage) string {
+	return scalarString(decodeQuoteAny(raw))
+}
+
 // inboundFromPayload translates a raw InfoFlow event payload into the
 // platform-agnostic channel.InboundMessage. appID is stamped by the owning
 // long connection because the platform service itself does not reliably carry
@@ -80,10 +119,10 @@ type quoteIDCandidate struct {
 // did not become a routed message so an operator can tell a genuine
 // misconfiguration (e.g. a missing bot_user_id) from ordinary group chatter.
 const (
-	dropReasonMalformed      = "malformed_payload"
-	dropReasonMissingSender  = "missing_sender"
-	dropReasonEmptyContent   = "empty_content"
-	dropReasonMissingGroupID = "missing_group_id"
+	dropReasonMalformed            = "malformed_payload"
+	degradationReasonMissingSender = "missing_sender"
+	dropReasonEmptyContent         = "empty_content"
+	dropReasonMissingGroupID       = "missing_group_id"
 )
 
 func inboundFromPayload(raw json.RawMessage, appID, botUserID string) (channel.InboundMessage, bool) {
@@ -118,8 +157,17 @@ func decodeInfoflowRaw(raw json.RawMessage) (infoflowRaw, error) {
 }
 
 // inboundFromPayloadReasonWithIdentity is inboundFromPayloadReason over an
-// explicit identity set (configured + group-resolved).
+// explicit identity set (configured + group-resolved). Quote handling defaults
+// on; callers that need the legacy bridge use the quote-aware variant below.
 func inboundFromPayloadReasonWithIdentity(raw json.RawMessage, appID string, self identitySet) (channel.InboundMessage, string, bool) {
+	return inboundFromPayloadReasonWithIdentityQuote(raw, appID, self, true)
+}
+
+// inboundFromPayloadReasonWithIdentityQuote is the single normalization entry
+// point with the quote policy explicit. quoteEnabled=false is the DEC35
+// "safety switch off" path: no quote parsing, no quote lookup, and no quote-
+// derived metadata, so the message is byte-for-byte the legacy bridge body.
+func inboundFromPayloadReasonWithIdentityQuote(raw json.RawMessage, appID string, self identitySet, quoteEnabled bool) (channel.InboundMessage, string, bool) {
 	payload, err := decodeInfoflowRaw(raw)
 	if err != nil {
 		return channel.InboundMessage{}, dropReasonMalformed, false
@@ -130,13 +178,10 @@ func inboundFromPayloadReasonWithIdentity(raw json.RawMessage, appID string, sel
 	}
 	payload.AppID = rawAppID
 	if isGroupPayload(payload) {
-		return normalizeGroupPayloadReasonWithIdentity(payload, self)
+		return normalizeGroupPayloadReasonWithIdentityQuote(payload, self, quoteEnabled)
 	}
-	msg, ok := normalizePrivatePayload(payload)
+	msg, ok := normalizePrivatePayloadQuote(payload, quoteEnabled)
 	if !ok {
-		if strings.TrimSpace(payload.FromUserID) == "" {
-			return channel.InboundMessage{}, dropReasonMissingSender, false
-		}
 		return channel.InboundMessage{}, dropReasonEmptyContent, false
 	}
 	return msg, "", true
@@ -147,14 +192,24 @@ func isGroupPayload(payload infoflowRaw) bool {
 }
 
 func normalizePrivatePayload(payload infoflowRaw) (channel.InboundMessage, bool) {
+	return normalizePrivatePayloadQuote(payload, true)
+}
+
+// normalizePrivatePayloadQuote normalizes a single-chat payload. A missing
+// sender no longer drops the message (DEC34): the frame is delivered with the
+// sender fields empty and the channel logs the degradation, so a malformed
+// quote/sender envelope cannot erase the body.
+func normalizePrivatePayloadQuote(payload infoflowRaw, quoteEnabled bool) (channel.InboundMessage, bool) {
 	senderID := strings.TrimSpace(payload.FromUserID)
-	if senderID == "" {
-		return channel.InboundMessage{}, false
-	}
 	own := flattenPrivateText(payload)
+	quoted := ""
+	var replyTo *channel.ReplyCtx
 	// The single-chat path used to ignore quotes entirely (N79 H2′); a p2p
 	// quote now renders the same <quoted_message> envelope as a group quote.
-	quoted := flattenQuoted(privateQuotedMessage(payload), payload.MulticaQuoteOrigin)
+	if quoteEnabled {
+		quoted = flattenQuoted(privateQuotedMessage(payload), payload.MulticaQuoteOrigin)
+		replyTo = privateReplyTo(payload)
+	}
 	text := own
 	command := own
 	if quoted != "" {
@@ -179,8 +234,8 @@ func normalizePrivatePayload(payload infoflowRaw) (channel.InboundMessage, bool)
 		Type:               msgTypeFromPrivate(payload),
 		Text:               text,
 		CommandText:        command,
-		HasSelectedContext: quoted != "",
-		ReplyTo:            privateReplyTo(payload),
+		HasSelectedContext: quoted != "" || quoteMessageHasID(privateQuotedMessage(payload)),
+		ReplyTo:            replyTo,
 		AddressedToBot:     true,
 		Raw:                mustJSON(payload),
 	}, true
@@ -225,6 +280,10 @@ func normalizeGroupPayloadReason(payload infoflowRaw, botUserID string) (channel
 }
 
 func normalizeGroupPayloadReasonWithIdentity(payload infoflowRaw, self identitySet) (channel.InboundMessage, string, bool) {
+	return normalizeGroupPayloadReasonWithIdentityQuote(payload, self, true)
+}
+
+func normalizeGroupPayloadReasonWithIdentityQuote(payload infoflowRaw, self identitySet, quoteEnabled bool) (channel.InboundMessage, string, bool) {
 	h := payload.Message.Header
 	groupID := anyString(payload.GroupID)
 	if groupID == "" {
@@ -234,20 +293,20 @@ func normalizeGroupPayloadReasonWithIdentity(payload infoflowRaw, self identityS
 	if groupID == "" {
 		return channel.InboundMessage{}, dropReasonMissingGroupID, false
 	}
-	if senderID == "" {
-		return channel.InboundMessage{}, dropReasonMissingSender, false
-	}
-	message := withBodyQuote(payload.Message)
+	message := payload.Message
 	own := flattenOwnText(message.Body)
-	quoted := flattenQuoted(message, payload.MulticaQuoteOrigin)
-	// A body quote may carry only messageid/fromuserid and no preview. It must
-	// still enter the lookup path, otherwise the full text can never be
-	// recovered (A28: lookup whenever a messageid is available).
-	hasSelectedContext := quoted != ""
-	if !hasSelectedContext {
-		if q := quoteFromBody(message.Body); q != nil && anyString(q.MessageID) != "" {
-			hasSelectedContext = true
-		}
+	quoted := ""
+	hasSelectedContext := false
+	var replyTo *channel.ReplyCtx
+	if quoteEnabled {
+		message = withBodyQuote(payload.Message)
+		own = flattenOwnText(message.Body)
+		quoted = flattenQuoted(message, payload.MulticaQuoteOrigin)
+		// A body quote may carry only messageid/fromuserid and no preview. It must
+		// still enter the lookup path, otherwise the full text can never be
+		// recovered (A28: lookup whenever a messageid is available).
+		hasSelectedContext = quoted != "" || quoteMessageHasID(message)
+		replyTo = groupReplyTo(message)
 	}
 	text := own
 	if quoted != "" {
@@ -279,8 +338,8 @@ func normalizeGroupPayloadReasonWithIdentity(payload infoflowRaw, self identityS
 		Text:               text,
 		CommandText:        command,
 		HasSelectedContext: hasSelectedContext,
-		ReplyTo:            groupReplyTo(message),
-		AddressedToBot:     addressedToBot(payload, self, eventType),
+		ReplyTo:            replyTo,
+		AddressedToBot:     addressedToBotQuote(payload, self, eventType, quoteEnabled),
 		Raw:                mustJSON(payload),
 	}
 	// NOTE: an unaddressed group message is deliberately routed (ok=true). The
@@ -398,19 +457,25 @@ func flattenBodyText(body []map[string]any, includeQuote bool) string {
 // The function is pure: all I/O (member resolution) and caching happen in the
 // caller, which passes the resolved identities in `extra`.
 func addressedToBot(payload infoflowRaw, self identitySet, eventType string) bool {
+	return addressedToBotQuote(payload, self, eventType, true)
+}
+
+func addressedToBotQuote(payload infoflowRaw, self identitySet, eventType string, quoteEnabled bool) bool {
 	if payload.Message == nil {
 		return false
 	}
-	// A reply to the bot is an explicit signal regardless of @.
-	if payload.Message.Reply != nil || payload.Message.Quote != nil {
-		return true
-	}
-	if q := quoteFromBody(payload.Message.Body); q != nil {
-		// Replying through the quote UI arrives as a body element; quoting the
-		// bot itself still counts as addressing it. This author field is for
-		// display/addressing only — DEC17 never uses it as getSingleMsg fromId.
-		if author := strings.TrimSpace(q.FromUserID); self.matches(author) {
+	if quoteEnabled {
+		// A reply to the bot is an explicit signal regardless of @.
+		if payload.Message.Reply != nil || payload.Message.Quote != nil {
 			return true
+		}
+		if q := quoteFromBody(payload.Message.Body); q != nil {
+			// Replying through the quote UI arrives as a body element; quoting the
+			// bot itself still counts as addressing it. This author field is for
+			// display/addressing only — DEC17 never uses it as getSingleMsg fromId.
+			if author := strings.TrimSpace(q.FromUserID); self.matches(author) {
+				return true
+			}
 		}
 	}
 	for _, item := range payload.Message.Body {
@@ -697,13 +762,15 @@ func renderQuoteWithOrigin(origin *quoteOrigin, quote *infoflowQuote) []string {
 	}
 }
 
-// renderQuotePreview keeps the pre-N80 rendering for quotes with no lookup.
+// renderQuotePreview renders a quote that has not been looked up. It keeps the
+// preview but labels it so a degraded quote is distinguishable from full text
+// (A31/A34); the legacy bridge (DEC35 off) does not call this path at all.
 func renderQuotePreview(quote *infoflowQuote) []string {
 	text := quotePreviewText(quote)
 	if text == "" {
 		return nil
 	}
-	return []string{text}
+	return []string{quoteTagPreview, text}
 }
 
 func quotePreviewText(quote *infoflowQuote) string {
@@ -741,6 +808,24 @@ func bodyItems(v any) []map[string]any {
 	default:
 		return nil
 	}
+}
+
+// quoteMessageHasID reports whether any quote envelope carries a lookupable id,
+// even when it has no preview. Such a quote must enter the enrichment path so
+// its full text can still be recovered (A28); rendering remains optional.
+func quoteMessageHasID(message *infoflowEventMessage) bool {
+	if message == nil {
+		return false
+	}
+	for _, q := range []*infoflowQuote{message.Reply, message.Quote} {
+		if q != nil && len(quoteCandidatesFor(q)) > 0 {
+			return true
+		}
+	}
+	if q := quoteFromBody(message.Body); q != nil {
+		return len(quoteCandidatesFor(q)) > 0
+	}
+	return false
 }
 
 func groupReplyTo(message *infoflowEventMessage) *channel.ReplyCtx {

@@ -29,6 +29,9 @@ type infoflowChannel struct {
 	client          *Client
 	groupIdentity   *groupIdentityResolver
 	quoteEnricher   *quoteEnricher
+	// quoteDisabled is the DEC35 safety switch: no quote parsing, lookups or
+	// quote-derived text. Zero value keeps quote support for direct test channels.
+	quoteDisabled bool
 	// workers delivers normalized messages out of the read loop (DEC7). It is
 	// created in Connect and nil in unit tests that drive handleFrame directly,
 	// which keeps those tests synchronous.
@@ -145,14 +148,14 @@ func (c *infoflowChannel) processFrame(ctx context.Context, raw json.RawMessage)
 			self = self.withResolved(tokens)
 		}
 	}
-	msg, dropReason, ok := inboundFromPayloadReasonWithIdentity(raw, c.appID, self)
+	msg, dropReason, ok := inboundFromPayloadReasonWithIdentityQuote(raw, c.appID, self, !c.quoteDisabled)
 	if !ok {
-		// The payload could not even be turned into a message (missing
-		// sender/content/group id, or malformed). Name the reason so a
-		// silent "the bot ignores me" report is traceable. Messages that
-		// DO normalize — including group messages not addressed to the
-		// bot — are routed on purpose: the engine owns that drop, so it
-		// records the audit row and runs the dedup gate.
+		// The payload could not even be turned into a message (empty content,
+		// missing group id, or malformed). Name the reason so a silent "the bot
+		// ignores me" report is traceable. Messages that DO normalize —
+		// including group messages not addressed to the bot and frames with a
+		// missing sender — are routed on purpose: the engine owns that drop, so
+		// it records the audit row and runs the dedup gate (DEC34).
 		c.logger.InfoContext(ctx, "infoflow: frame could not be normalized",
 			"drop_reason", dropReason,
 			"installation_id", c.appID,
@@ -161,7 +164,62 @@ func (c *infoflowChannel) processFrame(ctx context.Context, raw json.RawMessage)
 		)
 		return nil
 	}
+	c.logInboundDegraded(ctx, msg)
+	if !c.quoteDisabled && !msg.HasSelectedContext {
+		if payload, err := decodeInfoflowRaw(raw); err == nil {
+			if quote := quoteForPayload(payload); quote != nil {
+				c.logQuoteUnavailable(ctx, quote)
+			}
+		}
+	}
 	return c.deliver(ctx, msg, raw, self)
+}
+
+// logQuoteUnavailable records a quote that produced no usable selected context,
+// so an omitted/malformed quote is not silent (A34). Only the id hash is logged.
+func (c *infoflowChannel) logQuoteUnavailable(ctx context.Context, quote *infoflowQuote) {
+	if c.logger == nil || quote == nil {
+		return
+	}
+	id := quoteIDString(quote.MessageID)
+	if id == "" {
+		if candidates := quoteCandidatesFor(quote); len(candidates) > 0 {
+			id = candidates[0].ID
+		}
+	}
+	sha := ""
+	if id != "" {
+		sha = quoteIDFingerprint(id)
+	}
+	c.logger.InfoContext(ctx, "infoflow: quote degraded",
+		"reason", "quote_unavailable",
+		"degraded", true,
+		"sha256_8", sha,
+		"attempts", 0,
+		"installation_id", c.appID,
+	)
+}
+
+// logInboundDegraded records an adapter-level degradation that still delivered
+// the message. Missing sender is the path DEC34 overrode: it must not drop the
+// frame, but operators still need one redacted line to explain the degraded
+// routing. The message id is hashed, never logged.
+func (c *infoflowChannel) logInboundDegraded(ctx context.Context, msg channel.InboundMessage) {
+	if c.logger == nil || strings.TrimSpace(msg.Source.SenderID) != "" {
+		return
+	}
+	sha := ""
+	if strings.TrimSpace(msg.MessageID) != "" {
+		sha = quoteIDFingerprint(msg.MessageID)
+	}
+	c.logger.InfoContext(ctx, "infoflow: inbound degraded",
+		"reason", degradationReasonMissingSender,
+		"degraded", true,
+		"sha256_8", sha,
+		"attempts", 0,
+		"installation_id", c.appID,
+		"chat_type", string(msg.Source.ChatType),
+	)
 }
 
 // logInboundShape records one redacted shape line per inbound frame so the live
@@ -332,7 +390,7 @@ func chatKeyFromRaw(raw json.RawMessage) string {
 // deliver resolves the quoted message (when selected) and invokes the handler.
 // It runs on a worker goroutine in production, preserving per-chat order.
 func (c *infoflowChannel) deliver(ctx context.Context, msg channel.InboundMessage, raw json.RawMessage, self identitySet) error {
-	if msg.HasSelectedContext && c.quoteEnricher != nil {
+	if !c.quoteDisabled && msg.HasSelectedContext && c.quoteEnricher != nil {
 		msg = c.enrichQuoteOrigin(ctx, msg, raw, self)
 	}
 	return c.handler(ctx, msg)
@@ -367,10 +425,13 @@ func (c *infoflowChannel) enrichQuoteOrigin(ctx context.Context, msg channel.Inb
 		cancel()
 	}
 	enriched, ok := attachQuoteOrigin(msg, origin, c.appID, self)
+	// Log even when the origin could not be attached: A34 requires one line
+	// per degradation, and a failed attach is exactly the case that used to
+	// disappear silently.
+	c.logQuoteOrigin(ctx, origin)
 	if !ok {
 		return msg
 	}
-	c.logQuoteOrigin(ctx, origin)
 	return enriched
 }
 
@@ -379,8 +440,16 @@ func (c *infoflowChannel) logQuoteOrigin(ctx context.Context, origin *quoteOrigi
 	if origin == nil || c.logger == nil {
 		return
 	}
+	sha := ""
+	if origin.QueryID != "" {
+		sha = quoteIDFingerprint(origin.QueryID)
+	}
 	c.logger.InfoContext(ctx, "infoflow: quote origin resolved",
 		"quote_origin", string(origin.State),
+		"reason", string(origin.State),
+		"degraded", origin.State != quoteStateOK,
+		"sha256_8", sha,
+		"attempts", origin.Attempts,
 		"source", origin.Source,
 		"elapsed_ms", origin.ElapsedMS,
 		"msg_type", origin.MsgType,
@@ -414,8 +483,14 @@ func newFactory(deps ChannelDeps) channel.Factory {
 	if client == nil {
 		client = NewClient(nil, "")
 	}
+	quoteEnabled := quoteOriginEnabled()
 	enricher := deps.QuoteEnrich
-	if enricher == nil && quoteOriginEnabled() {
+	if !quoteEnabled {
+		// DEC35: off is a safety switch, not just a lookup toggle. It also
+		// suppresses any injected enricher so tests cannot accidentally call
+		// getSingleMsg while the legacy bridge is selected.
+		enricher = nil
+	} else if enricher == nil {
 		// One resolver per process: the concurrency cap and the cache are
 		// shared across installations.
 		enricher = newQuoteEnricher(client, logger)
@@ -437,6 +512,7 @@ func newFactory(deps ChannelDeps) channel.Factory {
 			client:          client,
 			groupIdentity:   newGroupIdentityResolver(client, creds.AppKey, creds.AppSecret, creds.AppID),
 			quoteEnricher:   enricher,
+			quoteDisabled:   !quoteEnabled,
 			handler:         cfg.Handler,
 			logger:          logger,
 		}, nil
