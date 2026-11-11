@@ -249,19 +249,13 @@ func (c *wsConnector) run(ctx context.Context) error {
 	}
 }
 
-// dispatchData acknowledges the event BEFORE handing it to the adapter. The
-// InfoFlow platform redelivers an event whose ack is late, and N81 measured the
-// quoted-message lookup pushing ack1/ack2 to 2.80s/5.60s when the ack waited for
-// onFrame. Acknowledging first (DEC7) keeps ACK latency independent of the
-// lookup; the adapter owns delivery afterwards and logs its own failures.
 func (c *wsConnector) dispatchData(ctx context.Context, frame Frame, write func(Frame) error) error {
-	if err := write(eventACKFrame(frame)); err != nil {
-		return err
-	}
 	if c.onFrame != nil {
-		return c.onFrame(ctx, frame)
+		if err := c.onFrame(ctx, frame); err != nil {
+			return err
+		}
 	}
-	return nil
+	return write(eventACKFrame(frame))
 }
 
 func pingFrame(seq uint64) Frame {
