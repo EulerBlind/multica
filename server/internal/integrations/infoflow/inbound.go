@@ -1,7 +1,6 @@
 package infoflow
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -57,57 +56,6 @@ type infoflowQuote struct {
 	Header     infoflowHeader   `json:"header"`
 	FromUserID string           `json:"fromuserid"`
 	Body       []map[string]any `json:"body"`
-	// IDCandidates keeps the raw sBasemsgId/sMsgId2 sequence so Enrich can
-	// retry a not-found base id with the alternate id (DEC24). Values are
-	// strings: a 19-digit id must never pass through float64.
-	IDCandidates []quoteIDCandidate `json:"-"`
-}
-
-// quoteIDCandidate is one message-id candidate and the field it came from.
-// JSONType is diagnostic only and is never rendered to the model.
-type quoteIDCandidate struct {
-	Field    string
-	ID       string
-	JSONType string
-}
-
-// UnmarshalJSON is deliberately tolerant of a malformed quote object: a wrong
-// preview/body/header shape must not fail the whole payload and erase the
-// sender's own body (DEC34/A31). Unknown fields are ignored; a non-object quote
-// becomes an empty quote and the normalizer omits it.
-func (q *infoflowQuote) UnmarshalJSON(data []byte) error {
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return nil
-	}
-	q.MessageID = decodeQuoteAny(raw["messageid"])
-	q.Preview = lenientQuoteString(raw["preview"])
-	q.Content = lenientQuoteString(raw["content"])
-	q.FromUserID = lenientQuoteString(raw["fromuserid"])
-	q.Body = bodyItems(decodeQuoteAny(raw["body"]))
-	if header, ok := raw["header"]; ok {
-		_ = json.Unmarshal(header, &q.Header)
-	}
-	return nil
-}
-
-// decodeQuoteAny preserves json.Number for 19-digit ids. A malformed field is
-// ignored rather than propagated: quote fields are optional context.
-func decodeQuoteAny(raw json.RawMessage) any {
-	if len(raw) == 0 {
-		return nil
-	}
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.UseNumber()
-	var v any
-	if err := dec.Decode(&v); err != nil {
-		return nil
-	}
-	return v
-}
-
-func lenientQuoteString(raw json.RawMessage) string {
-	return scalarString(decodeQuoteAny(raw))
 }
 
 // inboundFromPayload translates a raw InfoFlow event payload into the
@@ -119,10 +67,10 @@ func lenientQuoteString(raw json.RawMessage) string {
 // did not become a routed message so an operator can tell a genuine
 // misconfiguration (e.g. a missing bot_user_id) from ordinary group chatter.
 const (
-	dropReasonMalformed            = "malformed_payload"
-	degradationReasonMissingSender = "missing_sender"
-	dropReasonEmptyContent         = "empty_content"
-	dropReasonMissingGroupID       = "missing_group_id"
+	dropReasonMalformed      = "malformed_payload"
+	dropReasonMissingSender  = "missing_sender"
+	dropReasonEmptyContent   = "empty_content"
+	dropReasonMissingGroupID = "missing_group_id"
 )
 
 func inboundFromPayload(raw json.RawMessage, appID, botUserID string) (channel.InboundMessage, bool) {
@@ -143,33 +91,11 @@ func inboundFromPayloadReason(raw json.RawMessage, appID, botUserID string) (cha
 	return inboundFromPayloadReasonWithIdentity(raw, appID, newIdentitySet(botUserID, nil))
 }
 
-// decodeInfoflowRaw preserves JSON numbers as json.Number. InfoFlow ids are
-// 19-digit integers beyond float64's exact range; decoding into map[string]any
-// would silently round them before they reach getSingleMsg (DEC23).
-func decodeInfoflowRaw(raw json.RawMessage) (infoflowRaw, error) {
-	var payload infoflowRaw
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.UseNumber()
-	if err := dec.Decode(&payload); err != nil {
-		return infoflowRaw{}, err
-	}
-	return payload, nil
-}
-
 // inboundFromPayloadReasonWithIdentity is inboundFromPayloadReason over an
-// explicit identity set (configured + group-resolved). Quote handling defaults
-// on; callers that need the legacy bridge use the quote-aware variant below.
+// explicit identity set (configured + group-resolved).
 func inboundFromPayloadReasonWithIdentity(raw json.RawMessage, appID string, self identitySet) (channel.InboundMessage, string, bool) {
-	return inboundFromPayloadReasonWithIdentityQuote(raw, appID, self, true)
-}
-
-// inboundFromPayloadReasonWithIdentityQuote is the single normalization entry
-// point with the quote policy explicit. quoteEnabled=false is the DEC35
-// "safety switch off" path: no quote parsing, no quote lookup, and no quote-
-// derived metadata, so the message is byte-for-byte the legacy bridge body.
-func inboundFromPayloadReasonWithIdentityQuote(raw json.RawMessage, appID string, self identitySet, quoteEnabled bool) (channel.InboundMessage, string, bool) {
-	payload, err := decodeInfoflowRaw(raw)
-	if err != nil {
+	var payload infoflowRaw
+	if err := json.Unmarshal(raw, &payload); err != nil {
 		return channel.InboundMessage{}, dropReasonMalformed, false
 	}
 	rawAppID := appID
@@ -178,10 +104,13 @@ func inboundFromPayloadReasonWithIdentityQuote(raw json.RawMessage, appID string
 	}
 	payload.AppID = rawAppID
 	if isGroupPayload(payload) {
-		return normalizeGroupPayloadReasonWithIdentityQuote(payload, self, quoteEnabled)
+		return normalizeGroupPayloadReasonWithIdentity(payload, self)
 	}
-	msg, ok := normalizePrivatePayloadQuote(payload, quoteEnabled)
+	msg, ok := normalizePrivatePayload(payload)
 	if !ok {
+		if strings.TrimSpace(payload.FromUserID) == "" {
+			return channel.InboundMessage{}, dropReasonMissingSender, false
+		}
 		return channel.InboundMessage{}, dropReasonEmptyContent, false
 	}
 	return msg, "", true
@@ -192,24 +121,14 @@ func isGroupPayload(payload infoflowRaw) bool {
 }
 
 func normalizePrivatePayload(payload infoflowRaw) (channel.InboundMessage, bool) {
-	return normalizePrivatePayloadQuote(payload, true)
-}
-
-// normalizePrivatePayloadQuote normalizes a single-chat payload. A missing
-// sender no longer drops the message (DEC34): the frame is delivered with the
-// sender fields empty and the channel logs the degradation, so a malformed
-// quote/sender envelope cannot erase the body.
-func normalizePrivatePayloadQuote(payload infoflowRaw, quoteEnabled bool) (channel.InboundMessage, bool) {
 	senderID := strings.TrimSpace(payload.FromUserID)
+	if senderID == "" {
+		return channel.InboundMessage{}, false
+	}
 	own := flattenPrivateText(payload)
-	quoted := ""
-	var replyTo *channel.ReplyCtx
 	// The single-chat path used to ignore quotes entirely (N79 H2′); a p2p
 	// quote now renders the same <quoted_message> envelope as a group quote.
-	if quoteEnabled {
-		quoted = flattenQuoted(privateQuotedMessage(payload), payload.MulticaQuoteOrigin)
-		replyTo = privateReplyTo(payload)
-	}
+	quoted := flattenQuoted(privateQuotedMessage(payload), payload.MulticaQuoteOrigin)
 	text := own
 	command := own
 	if quoted != "" {
@@ -234,8 +153,8 @@ func normalizePrivatePayloadQuote(payload infoflowRaw, quoteEnabled bool) (chann
 		Type:               msgTypeFromPrivate(payload),
 		Text:               text,
 		CommandText:        command,
-		HasSelectedContext: quoted != "" || quoteMessageHasID(privateQuotedMessage(payload)),
-		ReplyTo:            replyTo,
+		HasSelectedContext: quoted != "",
+		ReplyTo:            privateReplyTo(payload),
 		AddressedToBot:     true,
 		Raw:                mustJSON(payload),
 	}, true
@@ -280,10 +199,6 @@ func normalizeGroupPayloadReason(payload infoflowRaw, botUserID string) (channel
 }
 
 func normalizeGroupPayloadReasonWithIdentity(payload infoflowRaw, self identitySet) (channel.InboundMessage, string, bool) {
-	return normalizeGroupPayloadReasonWithIdentityQuote(payload, self, true)
-}
-
-func normalizeGroupPayloadReasonWithIdentityQuote(payload infoflowRaw, self identitySet, quoteEnabled bool) (channel.InboundMessage, string, bool) {
 	h := payload.Message.Header
 	groupID := anyString(payload.GroupID)
 	if groupID == "" {
@@ -293,20 +208,20 @@ func normalizeGroupPayloadReasonWithIdentityQuote(payload infoflowRaw, self iden
 	if groupID == "" {
 		return channel.InboundMessage{}, dropReasonMissingGroupID, false
 	}
-	message := payload.Message
+	if senderID == "" {
+		return channel.InboundMessage{}, dropReasonMissingSender, false
+	}
+	message := withBodyQuote(payload.Message)
 	own := flattenOwnText(message.Body)
-	quoted := ""
-	hasSelectedContext := false
-	var replyTo *channel.ReplyCtx
-	if quoteEnabled {
-		message = withBodyQuote(payload.Message)
-		own = flattenOwnText(message.Body)
-		quoted = flattenQuoted(message, payload.MulticaQuoteOrigin)
-		// A body quote may carry only messageid/fromuserid and no preview. It must
-		// still enter the lookup path, otherwise the full text can never be
-		// recovered (A28: lookup whenever a messageid is available).
-		hasSelectedContext = quoted != "" || quoteMessageHasID(message)
-		replyTo = groupReplyTo(message)
+	quoted := flattenQuoted(message, payload.MulticaQuoteOrigin)
+	// A body quote may carry only messageid/fromuserid and no preview. It must
+	// still enter the lookup path, otherwise the full text can never be
+	// recovered (A28: lookup whenever a messageid is available).
+	hasSelectedContext := quoted != ""
+	if !hasSelectedContext {
+		if q := quoteFromBody(message.Body); q != nil && anyString(q.MessageID) != "" {
+			hasSelectedContext = true
+		}
 	}
 	text := own
 	if quoted != "" {
@@ -338,8 +253,8 @@ func normalizeGroupPayloadReasonWithIdentityQuote(payload infoflowRaw, self iden
 		Text:               text,
 		CommandText:        command,
 		HasSelectedContext: hasSelectedContext,
-		ReplyTo:            replyTo,
-		AddressedToBot:     addressedToBotQuote(payload, self, eventType, quoteEnabled),
+		ReplyTo:            groupReplyTo(message),
+		AddressedToBot:     addressedToBot(payload, self, eventType),
 		Raw:                mustJSON(payload),
 	}
 	// NOTE: an unaddressed group message is deliberately routed (ok=true). The
@@ -457,25 +372,19 @@ func flattenBodyText(body []map[string]any, includeQuote bool) string {
 // The function is pure: all I/O (member resolution) and caching happen in the
 // caller, which passes the resolved identities in `extra`.
 func addressedToBot(payload infoflowRaw, self identitySet, eventType string) bool {
-	return addressedToBotQuote(payload, self, eventType, true)
-}
-
-func addressedToBotQuote(payload infoflowRaw, self identitySet, eventType string, quoteEnabled bool) bool {
 	if payload.Message == nil {
 		return false
 	}
-	if quoteEnabled {
-		// A reply to the bot is an explicit signal regardless of @.
-		if payload.Message.Reply != nil || payload.Message.Quote != nil {
+	// A reply to the bot is an explicit signal regardless of @.
+	if payload.Message.Reply != nil || payload.Message.Quote != nil {
+		return true
+	}
+	if q := quoteFromBody(payload.Message.Body); q != nil {
+		// Replying through the quote UI arrives as a body element; quoting the
+		// bot itself still counts as addressing it. This author field is for
+		// display/addressing only — DEC17 never uses it as getSingleMsg fromId.
+		if author := strings.TrimSpace(q.FromUserID); self.matches(author) {
 			return true
-		}
-		if q := quoteFromBody(payload.Message.Body); q != nil {
-			// Replying through the quote UI arrives as a body element; quoting the
-			// bot itself still counts as addressing it. This author field is for
-			// display/addressing only — DEC17 never uses it as getSingleMsg fromId.
-			if author := strings.TrimSpace(q.FromUserID); self.matches(author) {
-				return true
-			}
 		}
 	}
 	for _, item := range payload.Message.Body {
@@ -731,15 +640,7 @@ func originAppliesTo(origin *quoteOrigin, quote *infoflowQuote) bool {
 	if origin.QueryID == "" {
 		return true
 	}
-	if origin.QueryID == quoteIDString(quote.MessageID) {
-		return true
-	}
-	for _, candidate := range quote.IDCandidates {
-		if candidate.ID == origin.QueryID {
-			return true
-		}
-	}
-	return false
+	return origin.QueryID == anyString(quote.MessageID)
 }
 
 // renderQuoteWithOrigin renders the labelled quoted block for a resolved origin.
@@ -762,15 +663,13 @@ func renderQuoteWithOrigin(origin *quoteOrigin, quote *infoflowQuote) []string {
 	}
 }
 
-// renderQuotePreview renders a quote that has not been looked up. It keeps the
-// preview but labels it so a degraded quote is distinguishable from full text
-// (A31/A34); the legacy bridge (DEC35 off) does not call this path at all.
+// renderQuotePreview keeps the pre-N80 rendering for quotes with no lookup.
 func renderQuotePreview(quote *infoflowQuote) []string {
 	text := quotePreviewText(quote)
 	if text == "" {
 		return nil
 	}
-	return []string{quoteTagPreview, text}
+	return []string{text}
 }
 
 func quotePreviewText(quote *infoflowQuote) string {
@@ -810,24 +709,6 @@ func bodyItems(v any) []map[string]any {
 	}
 }
 
-// quoteMessageHasID reports whether any quote envelope carries a lookupable id,
-// even when it has no preview. Such a quote must enter the enrichment path so
-// its full text can still be recovered (A28); rendering remains optional.
-func quoteMessageHasID(message *infoflowEventMessage) bool {
-	if message == nil {
-		return false
-	}
-	for _, q := range []*infoflowQuote{message.Reply, message.Quote} {
-		if q != nil && len(quoteCandidatesFor(q)) > 0 {
-			return true
-		}
-	}
-	if q := quoteFromBody(message.Body); q != nil {
-		return len(quoteCandidatesFor(q)) > 0
-	}
-	return false
-}
-
 func groupReplyTo(message *infoflowEventMessage) *channel.ReplyCtx {
 	if message == nil {
 		return nil
@@ -844,7 +725,7 @@ func groupReplyTo(message *infoflowEventMessage) *channel.ReplyCtx {
 	if q == nil {
 		return nil
 	}
-	messageID := quoteIDString(q.MessageID)
+	messageID := anyString(q.MessageID)
 	if messageID == "" {
 		return nil
 	}
@@ -879,79 +760,6 @@ func quoteElementFromBody(body []map[string]any) map[string]any {
 		case "QUOTE", "REPLY", "REFERENCE", "REPLYDATA":
 			return item
 		}
-	}
-	return nil
-}
-
-// quoteIDValue returns an exact id string and its JSON type. Only string and
-// json.Number (and int from in-process fixtures) are accepted: float64 has
-// already lost precision and must never become an id (DEC23).
-func quoteIDValue(v any) (string, string) {
-	switch typed := v.(type) {
-	case string:
-		return strings.TrimSpace(typed), "string"
-	case json.Number:
-		return strings.TrimSpace(typed.String()), "number"
-	case int:
-		return fmt.Sprintf("%d", typed), "number"
-	}
-	return "", ""
-}
-
-func quoteIDString(v any) string {
-	id, _ := quoteIDValue(v)
-	return id
-}
-
-// quoteIDCandidatesFromMaps extracts sBasemsgId then sMsgId2 (each with its
-// field name) and deduplicates equal ids. Legacy messageid aliases are used
-// only when neither live field is present, preserving pre-N93 QUOTE/REPLY.
-func quoteIDCandidatesFromMaps(candidates []map[string]any) []quoteIDCandidate {
-	out := make([]quoteIDCandidate, 0, 2)
-	add := func(field string, keys ...string) bool {
-		for _, candidate := range candidates {
-			for _, key := range keys {
-				v := fieldValue(candidate, key)
-				if v == nil {
-					continue
-				}
-				id, jsonType := quoteIDValue(v)
-				if id == "" {
-					continue
-				}
-				for _, existing := range out {
-					if existing.ID == id {
-						return true
-					}
-				}
-				out = append(out, quoteIDCandidate{Field: field, ID: id, JSONType: jsonType})
-				return true
-			}
-		}
-		return false
-	}
-	add("sBasemsgId", "sbasemsgid", "basemsgid")
-	add("sMsgId2", "smsgid2", "msgid2")
-	if len(out) == 0 {
-		add("messageid", "messageid", "msgid", "message_id", "msg_id", "quoteid", "quote_id", "id")
-	}
-	if len(out) > 2 {
-		out = out[:2]
-	}
-	return out
-}
-
-// quoteCandidatesFor exposes the sequence to Enrich. Explicit reply/quote
-// shapes carry only messageid, so they degrade to a single candidate.
-func quoteCandidatesFor(quote *infoflowQuote) []quoteIDCandidate {
-	if quote == nil {
-		return nil
-	}
-	if len(quote.IDCandidates) > 0 {
-		return append([]quoteIDCandidate(nil), quote.IDCandidates...)
-	}
-	if id := quoteIDString(quote.MessageID); id != "" {
-		return []quoteIDCandidate{{Field: "messageid", ID: id, JSONType: "string"}}
 	}
 	return nil
 }
@@ -993,14 +801,12 @@ func quoteFromBody(body []map[string]any) *infoflowQuote {
 		}
 		return ""
 	}
-	q := &infoflowQuote{MessageID: ""}
-	// DEC18/DEC24: sBasemsgId is the preferred id and sMsgId2 is the fallback.
-	// Keep both candidates (as strings) so Enrich can retry only on not_found.
-	// Legacy aliases are used only when neither live field exists.
-	q.IDCandidates = quoteIDCandidatesFromMaps(candidates)
-	if len(q.IDCandidates) > 0 {
-		q.MessageID = q.IDCandidates[0].ID
-	}
+	q := &infoflowQuote{}
+	// DEC18: the live REPLYDATA element pins the quoted message with
+	// sBasemsgId and falls back to sMsgId2. Older/unknown shapes keep the
+	// tolerant aliases so the pre-N93 QUOTE/REPLY/REFERENCE forms still work.
+	q.MessageID = get("sbasemsgid", "basemsgid", "smsgid2", "msgid2",
+		"messageid", "msgid", "message_id", "msg_id", "quoteid", "quote_id", "id")
 	// imid is the quoted author. It is display/verification only: DEC17 takes
 	// fromId from the current sender, never from this field.
 	q.FromUserID = get("fromuserid", "fromid", "from_userid", "from_user_id",

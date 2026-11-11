@@ -2,8 +2,6 @@ package infoflow
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,9 +27,6 @@ type infoflowChannel struct {
 	client          *Client
 	groupIdentity   *groupIdentityResolver
 	quoteEnricher   *quoteEnricher
-	// quoteDisabled is the DEC35 safety switch: no quote parsing, lookups or
-	// quote-derived text. Zero value keeps quote support for direct test channels.
-	quoteDisabled bool
 	// workers delivers normalized messages out of the read loop (DEC7). It is
 	// created in Connect and nil in unit tests that drive handleFrame directly,
 	// which keeps those tests synchronous.
@@ -148,14 +143,14 @@ func (c *infoflowChannel) processFrame(ctx context.Context, raw json.RawMessage)
 			self = self.withResolved(tokens)
 		}
 	}
-	msg, dropReason, ok := inboundFromPayloadReasonWithIdentityQuote(raw, c.appID, self, !c.quoteDisabled)
+	msg, dropReason, ok := inboundFromPayloadReasonWithIdentity(raw, c.appID, self)
 	if !ok {
-		// The payload could not even be turned into a message (empty content,
-		// missing group id, or malformed). Name the reason so a silent "the bot
-		// ignores me" report is traceable. Messages that DO normalize —
-		// including group messages not addressed to the bot and frames with a
-		// missing sender — are routed on purpose: the engine owns that drop, so
-		// it records the audit row and runs the dedup gate (DEC34).
+		// The payload could not even be turned into a message (missing
+		// sender/content/group id, or malformed). Name the reason so a
+		// silent "the bot ignores me" report is traceable. Messages that
+		// DO normalize — including group messages not addressed to the
+		// bot — are routed on purpose: the engine owns that drop, so it
+		// records the audit row and runs the dedup gate.
 		c.logger.InfoContext(ctx, "infoflow: frame could not be normalized",
 			"drop_reason", dropReason,
 			"installation_id", c.appID,
@@ -164,62 +159,7 @@ func (c *infoflowChannel) processFrame(ctx context.Context, raw json.RawMessage)
 		)
 		return nil
 	}
-	c.logInboundDegraded(ctx, msg)
-	if !c.quoteDisabled && !msg.HasSelectedContext {
-		if payload, err := decodeInfoflowRaw(raw); err == nil {
-			if quote := quoteForPayload(payload); quote != nil {
-				c.logQuoteUnavailable(ctx, quote)
-			}
-		}
-	}
 	return c.deliver(ctx, msg, raw, self)
-}
-
-// logQuoteUnavailable records a quote that produced no usable selected context,
-// so an omitted/malformed quote is not silent (A34). Only the id hash is logged.
-func (c *infoflowChannel) logQuoteUnavailable(ctx context.Context, quote *infoflowQuote) {
-	if c.logger == nil || quote == nil {
-		return
-	}
-	id := quoteIDString(quote.MessageID)
-	if id == "" {
-		if candidates := quoteCandidatesFor(quote); len(candidates) > 0 {
-			id = candidates[0].ID
-		}
-	}
-	sha := ""
-	if id != "" {
-		sha = quoteIDFingerprint(id)
-	}
-	c.logger.InfoContext(ctx, "infoflow: quote degraded",
-		"reason", "quote_unavailable",
-		"degraded", true,
-		"sha256_8", sha,
-		"attempts", 0,
-		"installation_id", c.appID,
-	)
-}
-
-// logInboundDegraded records an adapter-level degradation that still delivered
-// the message. Missing sender is the path DEC34 overrode: it must not drop the
-// frame, but operators still need one redacted line to explain the degraded
-// routing. The message id is hashed, never logged.
-func (c *infoflowChannel) logInboundDegraded(ctx context.Context, msg channel.InboundMessage) {
-	if c.logger == nil || strings.TrimSpace(msg.Source.SenderID) != "" {
-		return
-	}
-	sha := ""
-	if strings.TrimSpace(msg.MessageID) != "" {
-		sha = quoteIDFingerprint(msg.MessageID)
-	}
-	c.logger.InfoContext(ctx, "infoflow: inbound degraded",
-		"reason", degradationReasonMissingSender,
-		"degraded", true,
-		"sha256_8", sha,
-		"attempts", 0,
-		"installation_id", c.appID,
-		"chat_type", string(msg.Source.ChatType),
-	)
 }
 
 // logInboundShape records one redacted shape line per inbound frame so the live
@@ -230,7 +170,8 @@ func (c *infoflowChannel) logInboundShape(ctx context.Context, raw json.RawMessa
 	if c.logger == nil {
 		return
 	}
-	payload, _ := decodeInfoflowRaw(raw)
+	var payload infoflowRaw
+	_ = json.Unmarshal(raw, &payload)
 	chatType := "p2p"
 	headerID := anyString(payload.MsgID)
 	replyPresent, quotePresent := false, false
@@ -277,18 +218,6 @@ func (c *infoflowChannel) logInboundShape(ctx context.Context, raw json.RawMessa
 		quoteFields = shapeFields(element, "")
 		sort.Strings(quoteFields)
 	}
-	quoteIDs := []quoteIDCandidate{}
-	if q := quoteFromBody(body); q != nil {
-		quoteIDs = quoteCandidatesFor(q)
-	}
-	// The existing header_messageid field is the current message id, not a
-	// candidate. If a synthetic shape reuses the quoted id there, blank it so
-	// DEC25 remains true: candidate values never appear in the log.
-	for _, candidate := range quoteIDs {
-		if headerID != "" && candidate.ID == headerID {
-			headerID = ""
-		}
-	}
 	fromIDSource := ""
 	if payload.Message != nil && strings.TrimSpace(payload.Message.Header.FromUserID) != "" {
 		fromIDSource = "current_sender"
@@ -304,34 +233,8 @@ func (c *infoflowChannel) logInboundShape(ctx context.Context, raw json.RawMessa
 		"body_types", bodyTypes,
 		"body_keys", keysByType,
 		"quote_element_fields", quoteFields,
-		"quote_id_candidates", quoteIDLogEntries(quoteIDs),
 		"quote_from_id_source", fromIDSource,
 	)
-}
-
-// quoteIDLogEntries describes candidate ids without logging their values.
-// DEC25: field name, JSON type, length and sha256[:8] are enough to align a
-// real sample with the query id while preserving A29 redaction.
-func quoteIDLogEntries(candidates []quoteIDCandidate) []map[string]any {
-	entries := make([]map[string]any, 0, len(candidates))
-	for _, candidate := range candidates {
-		jsonType := candidate.JSONType
-		if jsonType == "" {
-			jsonType = "string"
-		}
-		entries = append(entries, map[string]any{
-			"field":     candidate.Field,
-			"json_type": jsonType,
-			"length":    len(candidate.ID),
-			"sha256_8":  quoteIDFingerprint(candidate.ID),
-		})
-	}
-	return entries
-}
-
-func quoteIDFingerprint(id string) string {
-	sum := sha256.Sum256([]byte(id))
-	return hex.EncodeToString(sum[:])[:8]
 }
 
 // shapeFields lists key names, prefixing one level of nested objects with
@@ -390,7 +293,7 @@ func chatKeyFromRaw(raw json.RawMessage) string {
 // deliver resolves the quoted message (when selected) and invokes the handler.
 // It runs on a worker goroutine in production, preserving per-chat order.
 func (c *infoflowChannel) deliver(ctx context.Context, msg channel.InboundMessage, raw json.RawMessage, self identitySet) error {
-	if !c.quoteDisabled && msg.HasSelectedContext && c.quoteEnricher != nil {
+	if msg.HasSelectedContext && c.quoteEnricher != nil {
 		msg = c.enrichQuoteOrigin(ctx, msg, raw, self)
 	}
 	return c.handler(ctx, msg)
@@ -401,8 +304,8 @@ func (c *infoflowChannel) deliver(ctx context.Context, msg channel.InboundMessag
 // cancelled WebSocket nor a slow platform call can take the main message down;
 // whatever the outcome, the handler still receives a message.
 func (c *infoflowChannel) enrichQuoteOrigin(ctx context.Context, msg channel.InboundMessage, raw json.RawMessage, self identitySet) channel.InboundMessage {
-	payload, err := decodeInfoflowRaw(raw)
-	if err != nil {
+	var payload infoflowRaw
+	if err := json.Unmarshal(raw, &payload); err != nil {
 		return msg
 	}
 	if anyString(payload.AppID) == "" {
@@ -416,22 +319,18 @@ func (c *infoflowChannel) enrichQuoteOrigin(ctx context.Context, msg channel.Inb
 	if query, ok := quoteQueryFor(msg, payload, quote); ok {
 		enrichCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), quoteEnrichBudget)
 		origin = c.quoteEnricher.Enrich(enrichCtx, quoteEnrichRequest{
-			AppID:      c.appID,
-			AppKey:     c.appKey,
-			AppSecret:  c.appSecret,
-			Query:      query,
-			Candidates: quoteCandidatesFor(quote),
+			AppID:     c.appID,
+			AppKey:    c.appKey,
+			AppSecret: c.appSecret,
+			Query:     query,
 		})
 		cancel()
 	}
 	enriched, ok := attachQuoteOrigin(msg, origin, c.appID, self)
-	// Log even when the origin could not be attached: A34 requires one line
-	// per degradation, and a failed attach is exactly the case that used to
-	// disappear silently.
-	c.logQuoteOrigin(ctx, origin)
 	if !ok {
 		return msg
 	}
+	c.logQuoteOrigin(ctx, origin)
 	return enriched
 }
 
@@ -440,16 +339,8 @@ func (c *infoflowChannel) logQuoteOrigin(ctx context.Context, origin *quoteOrigi
 	if origin == nil || c.logger == nil {
 		return
 	}
-	sha := ""
-	if origin.QueryID != "" {
-		sha = quoteIDFingerprint(origin.QueryID)
-	}
 	c.logger.InfoContext(ctx, "infoflow: quote origin resolved",
 		"quote_origin", string(origin.State),
-		"reason", string(origin.State),
-		"degraded", origin.State != quoteStateOK,
-		"sha256_8", sha,
-		"attempts", origin.Attempts,
 		"source", origin.Source,
 		"elapsed_ms", origin.ElapsedMS,
 		"msg_type", origin.MsgType,
@@ -483,14 +374,8 @@ func newFactory(deps ChannelDeps) channel.Factory {
 	if client == nil {
 		client = NewClient(nil, "")
 	}
-	quoteEnabled := quoteOriginEnabled()
 	enricher := deps.QuoteEnrich
-	if !quoteEnabled {
-		// DEC35: off is a safety switch, not just a lookup toggle. It also
-		// suppresses any injected enricher so tests cannot accidentally call
-		// getSingleMsg while the legacy bridge is selected.
-		enricher = nil
-	} else if enricher == nil {
+	if enricher == nil && quoteOriginEnabled() {
 		// One resolver per process: the concurrency cap and the cache are
 		// shared across installations.
 		enricher = newQuoteEnricher(client, logger)
@@ -512,7 +397,6 @@ func newFactory(deps ChannelDeps) channel.Factory {
 			client:          client,
 			groupIdentity:   newGroupIdentityResolver(client, creds.AppKey, creds.AppSecret, creds.AppID),
 			quoteEnricher:   enricher,
-			quoteDisabled:   !quoteEnabled,
 			handler:         cfg.Handler,
 			logger:          logger,
 		}, nil
@@ -523,8 +407,8 @@ func newFactory(deps ChannelDeps) channel.Factory {
 // committing to a full normalization (the group id may arrive top-level or in
 // the message header). Empty means p2p or not a group frame.
 func groupIDFromRaw(raw json.RawMessage) string {
-	payload, err := decodeInfoflowRaw(raw)
-	if err != nil {
+	var payload infoflowRaw
+	if err := json.Unmarshal(raw, &payload); err != nil {
 		return ""
 	}
 	if !isGroupPayload(payload) {

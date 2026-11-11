@@ -152,11 +152,6 @@ type quoteOrigin struct {
 	CreateTime int64            `json:"create_time,omitempty"`
 	Error      string           `json:"error,omitempty"`
 	ElapsedMS  int64            `json:"elapsed_ms,omitempty"`
-	// Matched names the candidate field that produced a successful lookup
-	// (sbasemsgid/smsgid2); Attempts is the 1-based candidate attempt for this
-	// inbound message (DEC24/DEC25). Neither records the id value.
-	Matched  string `json:"matched,omitempty"`
-	Attempts int    `json:"attempts"`
 }
 
 // clone returns an independent copy. Enrichment attaches an origin to exactly
@@ -178,9 +173,6 @@ type quoteEnrichRequest struct {
 	AppKey    string
 	AppSecret string
 	Query     quoteQuery
-	// Candidates is the DEC24 sequence sBasemsgId -> sMsgId2. A direct caller
-	// that omits it gets the single Query.MsgID candidate.
-	Candidates []quoteIDCandidate
 }
 
 // quoteEnricher resolves quoted-message full text. It is shared by every
@@ -222,74 +214,26 @@ func quoteOriginEnabled() bool {
 	}
 }
 
-// quoteCandidateSequence normalizes the DEC24 order: explicit candidates first,
-// otherwise the single query id. It caps work at two candidates and drops
-// duplicate ids so a repeated sMsgId2 cannot cause a second identical request.
-// quoteMatchedName normalizes the diagnostic field casing for quote_origin's
-// matched value, which the contract pins to sbasemsgid/smsgid2.
-func quoteMatchedName(field string) string {
-	switch strings.ToLower(strings.TrimSpace(field)) {
-	case "sbasemsgid":
-		return "sbasemsgid"
-	case "smsgid2":
-		return "smsgid2"
-	}
-	return strings.ToLower(strings.TrimSpace(field))
-}
-
-func quoteCandidateSequence(req quoteEnrichRequest) []quoteIDCandidate {
-	out := make([]quoteIDCandidate, 0, 2)
-	add := func(candidate quoteIDCandidate) {
-		candidate.ID = strings.TrimSpace(candidate.ID)
-		if candidate.ID == "" || len(out) >= 2 {
-			return
-		}
-		for _, existing := range out {
-			if existing.ID == candidate.ID {
-				return
-			}
-		}
-		if candidate.Field == "" {
-			candidate.Field = "messageid"
-		}
-		if candidate.JSONType == "" {
-			candidate.JSONType = "string"
-		}
-		out = append(out, candidate)
-	}
-	for _, candidate := range req.Candidates {
-		add(candidate)
-	}
-	if len(out) == 0 {
-		add(quoteIDCandidate{Field: "messageid", ID: req.Query.MsgID, JSONType: "string"})
-	}
-	return out
-}
-
 // Enrich resolves the quoted text. It never returns an error: a missing id, a
 // permission failure, a timeout and a network fault all become a quoteOrigin
 // state, and the caller keeps rendering the inbound preview.
-//
-// DEC24: only not_found advances to the next candidate (sBasemsgId -> sMsgId2),
-// at most two attempts. denied/timeout/unavailable stop immediately so a
-// suspicious id cannot amplify rate limits. Each candidate has its own cache
-// key, so a negative base-id entry cannot suppress the alternate id.
 func (e *quoteEnricher) Enrich(ctx context.Context, req quoteEnrichRequest) *quoteOrigin {
 	if e == nil || e.client == nil {
 		return &quoteOrigin{State: quoteStateSkipped, Error: "enricher not configured"}
 	}
-	candidates := quoteCandidateSequence(req)
 	query := req.Query
-	if len(candidates) > 0 {
-		query.MsgID = candidates[0].ID
-	}
 	start := time.Now()
-	if len(candidates) == 0 || query.FromID == "" || query.ReceiverID == "" || query.ReceiverType == 0 {
+	if query.MsgID == "" || query.FromID == "" || query.ReceiverID == "" || query.ReceiverType == 0 {
 		return &quoteOrigin{State: quoteStateSkipped, QueryID: query.MsgID, Error: "incomplete query"}
+	}
+
+	key := req.AppID + "|" + query.MsgID
+	if cached, ok := e.cache.get(key, start); ok {
+		return cached
 	}
 	if until, cooling := e.deniedFor(req.AppID, start); cooling {
 		return &quoteOrigin{
-			QueryID: candidates[0].ID,
+			QueryID: query.MsgID,
 			State:   quoteStateDenied,
 			Source:  "preview",
 			Error:   "api not allowed (cooling down until " + until.Format(time.RFC3339) + ")",
@@ -301,7 +245,7 @@ func (e *quoteEnricher) Enrich(ctx context.Context, req quoteEnrichRequest) *quo
 		defer func() { <-e.sem }()
 	case <-ctx.Done():
 		return &quoteOrigin{
-			QueryID: candidates[0].ID,
+			QueryID: query.MsgID,
 			State:   quoteStateTimeout,
 			Source:  "preview",
 			Error:   ctx.Err().Error(),
@@ -310,51 +254,11 @@ func (e *quoteEnricher) Enrich(ctx context.Context, req quoteEnrichRequest) *quo
 
 	lookupCtx, cancel := context.WithTimeout(ctx, e.timeout)
 	defer cancel()
-
-	attempts := 0
-	var last *quoteOrigin
-	for _, candidate := range candidates {
-		attempts++
-		key := req.AppID + "|" + candidate.ID
-		if cached, ok := e.cache.get(key, start); ok {
-			cached.QueryID = candidate.ID
-			if cached.State == quoteStateNotFound {
-				last = cached
-				continue
-			}
-			if cached.State == quoteStateOK {
-				cached.Matched = quoteMatchedName(candidate.Field)
-			}
-			cached.Attempts = attempts
-			return cached
-		}
-
-		candidateReq := req
-		candidateReq.Query = req.Query
-		candidateReq.Query.MsgID = candidate.ID
-		origin := e.lookup(lookupCtx, candidateReq)
-		origin.QueryID = candidate.ID
-		origin.Attempts = attempts
-		if origin.State == quoteStateOK {
-			origin.Matched = quoteMatchedName(candidate.Field)
-		}
-		origin.ElapsedMS = time.Since(start).Milliseconds()
-		e.remember(key, origin, start)
-		if origin.State == quoteStateNotFound {
-			last = origin
-			continue
-		}
-		return origin
-	}
-
-	if last == nil {
-		last = &quoteOrigin{State: quoteStateNotFound, Source: "preview"}
-	}
-	last.QueryID = candidates[len(candidates)-1].ID
-	last.Attempts = attempts
-	last.Matched = ""
-	last.ElapsedMS = time.Since(start).Milliseconds()
-	return last
+	origin := e.lookup(lookupCtx, req)
+	origin.QueryID = query.MsgID
+	origin.ElapsedMS = time.Since(start).Milliseconds()
+	e.remember(key, origin, start)
+	return origin
 }
 
 func (e *quoteEnricher) lookup(ctx context.Context, req quoteEnrichRequest) *quoteOrigin {
@@ -517,7 +421,7 @@ func quoteQueryFor(msg channel.InboundMessage, payload infoflowRaw, quote *infof
 		return quoteQuery{}, false
 	}
 	query := quoteQuery{
-		MsgID:  quoteIDString(quote.MessageID),
+		MsgID:  strings.TrimSpace(anyString(quote.MessageID)),
 		FromID: strings.TrimSpace(msg.Source.SenderID),
 	}
 	if query.MsgID == "" || query.FromID == "" {
@@ -562,13 +466,13 @@ func attachQuoteOrigin(msg channel.InboundMessage, origin *quoteOrigin, appID st
 	if origin == nil {
 		return msg, false
 	}
-	// Copy boundary (DEC11): msg.Raw is read-only. decodeInfoflowRaw builds a
+	// Copy boundary (DEC11): msg.Raw is read-only. json.Unmarshal builds a
 	// payload graph owned by this call, the origin is cloned so the cache
 	// instance stays private, and normalize* returns a Raw marshaled into a
 	// fresh buffer. No shared map/slice/pointer is written here, therefore one
 	// frame's origin cannot leak into another frame's Raw.
-	payload, err := decodeInfoflowRaw(msg.Raw)
-	if err != nil {
+	var payload infoflowRaw
+	if err := json.Unmarshal(msg.Raw, &payload); err != nil {
 		return msg, false
 	}
 	if payload.AppID == nil || anyString(payload.AppID) == "" {
